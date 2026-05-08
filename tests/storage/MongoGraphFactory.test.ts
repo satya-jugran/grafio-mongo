@@ -2,7 +2,7 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it, test } from '@je
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 
-import { MongoGraphFactory } from 'grafio';
+import { MongoGraphFactory } from '../../src/MongoGraphFactory';
 import { runGraphFactoryScenarios } from 'grafio/testing';
 
 let mongoServer: MongoMemoryServer;

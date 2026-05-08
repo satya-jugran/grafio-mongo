@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe } from '@jest/globals';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 import { Graph } from 'grafio';
-import { MongoStorageProvider } from 'grafio';
+import { MongoStorageProvider } from '../src/MongoStorageProvider';
 import { educationGraphData, runEducationGraphScenarios } from 'grafio/testing';
 
 let mongoServer: MongoMemoryServer;

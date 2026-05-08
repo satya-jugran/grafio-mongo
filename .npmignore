@@ -1,0 +1,34 @@
+# Source and tests
+src/
+tests/
+plans/
+
+# TypeScript files (keep declaration files)
+*.ts
+!*.d.ts
+
+# TypeScript config files
+tsconfig*.json
+
+# Jest and other config
+jest.config.js
+*.config.js
+
+# Documentation and design docs
+*.md
+!README.md
+LICENSE
+
+# VS Code
+.vscode/
+
+# npm and git
+.git/
+.gitignore
+.npmignore
+
+# Coverage reports
+coverage/
+
+# Lock files (optional, some prefer to keep package-lock.json)
+package-lock.json
