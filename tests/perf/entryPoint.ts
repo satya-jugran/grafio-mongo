@@ -13,7 +13,7 @@
 import { MongoClient } from 'mongodb';
 import { MongoGraphFactory } from '../../src/MongoGraphFactory';
 // Import unified perf infrastructure from grafio
-import { 
+import {
   buildScenarios,           // Returns scenarios with mongodb iteration factors
   buildGraph,               // Creates test graph
   runScenario,              // Runs a single scenario
@@ -24,7 +24,7 @@ import {
   GraphMeta                   // Type for graph metadata returned by buildGraph
 } from 'grafio/testing/perf';
 
-import { Graph } from 'grafio';
+import { Graph, GraphManager } from 'grafio';
 
 // ─── Scale Definitions ────────────────────────────────────────────────────────
 // MongoDB provider: operations are more expensive due to network I/O.
@@ -37,9 +37,9 @@ interface ScaleConfig {
 }
 
 const SCALES: ScaleConfig[] = [
-  { label: 'Small  (1k nodes)',   nodeCount: 1_000,   edgesPerNode: 3 },
-  { label: 'Medium (5k nodes)',  nodeCount: 5_000,   edgesPerNode: 3 },
-  { label: 'Large  (10k nodes)', nodeCount: 10_000,  edgesPerNode: 3 },
+  { label: 'Small  (1k nodes)', nodeCount: 1_000, edgesPerNode: 3 },
+  { label: 'Medium (5k nodes)', nodeCount: 5_000, edgesPerNode: 3 },
+  { label: 'Large  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
 ];
 
 // ─── MongoDB Configuration ────────────────────────────────────────────────────
@@ -63,6 +63,16 @@ async function main(): Promise<void> {
     dbName: process.env.MONGODB_DB || DEFAULT_DB,
     graphId: process.env.MONGODB_GRAPH_ID || 'perf-benchmark',
   };
+
+  GraphManager.init({
+    cache: {
+      maxNodesCount: 10000,
+      maxEdgesCount: 50000,
+      cacheStore: 'in-memory',
+      evictionStrategy: 'LRU',
+      preloadStrategy: 'all'
+    }
+  });
 
   console.log('\n');
   console.log('╔══════════════════════════════════════════════════════════════════════════════╗');
@@ -112,6 +122,9 @@ async function main(): Promise<void> {
     // Then export and import into MongoDB
     const jsonData = await memMeta.graph.exportJSON();
     const mongoMeta = await importIntoMongo(factory, jsonData, memMeta, config.graphId);
+    GraphManager.getInstance().getCacheManager()?.invalidateAll(); // Clear cache to ensure fair benchmarking
+    await mongoMeta.graph.warmCache();
+    console.log('  ✓  Graph imported into MongoDB and cache warmed');
 
     const buildMs = Number(process.hrtime.bigint() - buildStart) / 1_000_000;
 
@@ -134,6 +147,15 @@ async function main(): Promise<void> {
     // ── 8. Print results table ─────────────────────────────────────────────
     console.log();
     printReport(results, mongoMeta.nodeCount, mongoMeta.edgeCount, 0, scale.label);
+
+    // Print cache stats if available
+    const cacheManager = GraphManager.getInstance().getCacheManager();
+    if (cacheManager) {
+      const stats = await cacheManager.getStats();
+      console.log(`Cache Hits: ${stats.hitCount.toLocaleString()} | Misses: ${stats.missCount.toLocaleString()}`);
+      console.log(`Cache Evictions: ${stats.evictionCount.toLocaleString()}`);
+      console.log(`Current Cache Size: Total Graphs: ${stats.totalGraphIds.toLocaleString()} | Total Nodes: ${stats.totalNodes.toLocaleString()} | Edges: ${stats.totalEdges.toLocaleString()}`);
+    }
 
     // ── 9. Cleanup before next scale ───────────────────────────────────────
     await mongoMeta.graph.clear();

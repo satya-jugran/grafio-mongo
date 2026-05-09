@@ -157,7 +157,7 @@ try {
 
 ## Graph Operations
 
-All graph operations from grafio are available when using MongoDB storage. See the [grafio documentation](https://github.com/witspry/grafio) for the complete API reference.
+All graph operations from grafio are available when using MongoDB storage. See the [grafio documentation](https://github.com/satyajugran/grafio) for the complete API reference.
 
 ### Example Operations
 

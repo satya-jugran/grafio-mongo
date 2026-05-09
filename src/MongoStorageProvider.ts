@@ -10,6 +10,7 @@ import type {
 
 import {
   IStorageProvider,
+  IOrderBy,
   NodeData,
   ITransactionHandle,
   EdgeData,
@@ -36,6 +37,8 @@ interface NodeDoc extends Document {
   id: string;
   graphId: string;
   type: string;
+  createdOn: number;
+  updatedOn: number;
   properties: Record<string, unknown>;
 }
 
@@ -50,6 +53,8 @@ interface EdgeDoc extends Document {
   sourceId: string;
   targetId: string;
   type: string;
+  createdOn: number;
+  updatedOn: number;
   properties: Record<string, unknown>;
 }
 
@@ -188,12 +193,23 @@ export class MongoStorageProvider implements IStorageProvider {
   // ---------------------------------------------------------------------------
 
   async insertNode(node: NodeData, transaction?: ITransactionHandle): Promise<void> {
+    const now = Date.now();
+    // Set createdOn and updatedOn at node level if not already set
+    if (node.createdOn === undefined) {
+      node.createdOn = now;
+    }
+    if (node.updatedOn === undefined) {
+      node.updatedOn = now;
+    }
+
     const session = transaction?.context as ClientSession | undefined;
     try {
       await this._nodes.insertOne({
         id: node.id,
         graphId: this._graphId,
         type: node.type,
+        createdOn: node.createdOn,
+        updatedOn: node.updatedOn,
         properties: node.properties,
       } as NodeDoc, { session });
     } catch (e: unknown) {
@@ -226,10 +242,11 @@ export class MongoStorageProvider implements IStorageProvider {
     return doc ? this._docToNode(doc) : undefined;
   }
 
-  async getAllNodes(limit?: number, transaction?: ITransactionHandle): Promise<NodeData[]> {
+  async getAllNodes(limit?: number, orderBy?: IOrderBy, transaction?: ITransactionHandle): Promise<NodeData[]> {
     const session = transaction?.context as ClientSession | undefined;
     const nodes: NodeData[] = [];
     const cursor = this._nodes.find({ graphId: this._graphId }, { session }).batchSize(this._batchSize);
+    if (orderBy) cursor.sort(orderBy.field, orderBy.direction);
     if (limit) cursor.limit(limit);
 
     for await (const doc of cursor) {
@@ -275,6 +292,15 @@ export class MongoStorageProvider implements IStorageProvider {
   // ---------------------------------------------------------------------------
 
   async insertEdge(edge: EdgeData, transaction?: ITransactionHandle): Promise<void> {
+    const now = Date.now();
+    // Set createdOn and updatedOn at edge level if not already set
+    if (edge.createdOn === undefined) {
+      edge.createdOn = now;
+    }
+    if (edge.updatedOn === undefined) {
+      edge.updatedOn = now;
+    }
+
     const session = transaction?.context as ClientSession | undefined;
     try {
       await this._edges.insertOne({
@@ -283,6 +309,8 @@ export class MongoStorageProvider implements IStorageProvider {
         sourceId: edge.sourceId,
         targetId: edge.targetId,
         type: edge.type,
+        createdOn: edge.createdOn,
+        updatedOn: edge.updatedOn,
         properties: edge.properties,
       } as EdgeDoc, { session });
     } catch (e: unknown) {
@@ -315,10 +343,12 @@ export class MongoStorageProvider implements IStorageProvider {
     return doc ? this._docToEdge(doc) : undefined;
   }
 
-  async getAllEdges(transaction?: ITransactionHandle): Promise<EdgeData[]> {
+  async getAllEdges(limit?: number, orderBy?: IOrderBy, transaction?: ITransactionHandle): Promise<EdgeData[]> {
     const session = transaction?.context as ClientSession | undefined;
     const edges: EdgeData[] = [];
     const cursor = this._edges.find({ graphId: this._graphId }, { session }).batchSize(this._batchSize);
+    if (orderBy) cursor.sort(orderBy.field, orderBy.direction);
+    if (limit) cursor.limit(limit);
 
     for await (const doc of cursor) {
       edges.push(this._docToEdge(doc));
@@ -436,6 +466,8 @@ export class MongoStorageProvider implements IStorageProvider {
         id: n.id,
         graphId: this._graphId,
         type: n.type,
+        createdOn: n.createdOn ?? Date.now(),
+        updatedOn: n.updatedOn ?? Date.now(),
         properties: n.properties,
       } as NodeDoc));
       for (let i = 0; i < nodeDocs.length; i += this._batchSize) {
@@ -449,6 +481,8 @@ export class MongoStorageProvider implements IStorageProvider {
         sourceId: e.sourceId,
         targetId: e.targetId,
         type: e.type,
+        createdOn: e.createdOn ?? Date.now(),
+        updatedOn: e.updatedOn ?? Date.now(),
         properties: e.properties,
       } as EdgeDoc));
       for (let i = 0; i < edgeDocs.length; i += this._batchSize) {
@@ -523,7 +557,7 @@ export class MongoStorageProvider implements IStorageProvider {
     // Atomic: only succeeds if the property does NOT already exist
     const result = await collection.updateOne(
       { graphId: this._graphId, id, [`properties.${key}`]: { $exists: false } },
-      { $set: { [`properties.${key}`]: value } },
+      { $set: { [`properties.${key}`]: value, updatedOn: Date.now() } },
       { session }
     );
 
@@ -554,7 +588,7 @@ export class MongoStorageProvider implements IStorageProvider {
     // Atomic update: only succeeds if the property already exists
     const result = await collection.updateOne(
       { graphId: this._graphId, id, [`properties.${key}`]: { $exists: true } },
-      { $set: { [`properties.${key}`]: value } },
+      { $set: { [`properties.${key}`]: value, updatedOn: Date.now() } },
       { session }
     );
 
@@ -587,7 +621,7 @@ export class MongoStorageProvider implements IStorageProvider {
 
     await collection.updateOne(
       { graphId: this._graphId, id },
-      { $unset: { [`properties.${key}`]: '' } },
+      { $unset: { [`properties.${key}`]: '' }, $set: { updatedOn: Date.now() } },
       { session }
     );
   }
@@ -699,6 +733,8 @@ export class MongoStorageProvider implements IStorageProvider {
     return {
       id: doc.id,
       type: doc.type,
+      createdOn: doc.createdOn,
+      updatedOn: doc.updatedOn,
       properties: doc.properties,
     };
   }
@@ -709,6 +745,8 @@ export class MongoStorageProvider implements IStorageProvider {
       sourceId: doc.sourceId,
       targetId: doc.targetId,
       type: doc.type,
+      createdOn: doc.createdOn,
+      updatedOn: doc.updatedOn,
       properties: doc.properties,
     };
   }
