@@ -17,6 +17,8 @@ jest.config.js
 # Documentation and design docs
 *.md
 !README.md
+!CODE_OF_CONDUCT.md
+!CONTRIBUTING.md
 LICENSE
 
 # VS Code
