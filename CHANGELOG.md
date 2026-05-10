@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.2.0] - 2026-05-10
+
+### ✨ New Features
+
+1. **Total Node and Edge Count Methods**
+   - Added `getTotalNodeCount()` for efficient node count queries
+   - Added `getTotalEdgeCount()` for efficient edge count queries
+   - Both methods support optional `graphId` parameter for partitioned counts
+
 ## [1.1.0] - 2026-05-08
 
 ### ✨ New Features
