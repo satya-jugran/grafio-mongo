@@ -173,6 +173,8 @@ export class MongoStorageProvider implements IStorageProvider {
     // Edge indexes
     await this._edges.createIndex({ graphId: 1, id: 1 }, { unique: true, name: 'edge_graph_id_unique' });
     await this._edges.createIndex({ graphId: 1, type: 1 }, { name: 'edge_graph_type' });
+    await this._edges.createIndex({ graphId: 1, sourceId: 1 }, { name: 'edge_graph_source' });
+    await this._edges.createIndex({ graphId: 1, targetId: 1 }, { name: 'edge_graph_target' });
     await this._edges.createIndex({ graphId: 1, sourceId: 1, type: 1 }, { name: 'edge_graph_source_type' });
     await this._edges.createIndex({ graphId: 1, targetId: 1, type: 1 }, { name: 'edge_graph_target_type' });
   }
@@ -274,6 +276,11 @@ export class MongoStorageProvider implements IStorageProvider {
     return docs.map(d => this._docToNode(d));
   }
 
+  async getTotalNodeCount(transaction?: ITransactionHandle): Promise<number> {
+    const session = transaction?.context as ClientSession | undefined;
+    return this._nodes.countDocuments({ graphId: this._graphId }, { session });
+  }
+
   async getEdgesByProperty(key: string, value: unknown, edgeType?: string, transaction?: ITransactionHandle): Promise<EdgeData[]> {
     const session = transaction?.context as ClientSession | undefined;
     const filter: Filter<EdgeDoc> = {
@@ -285,6 +292,11 @@ export class MongoStorageProvider implements IStorageProvider {
     }
     const docs = await this._edges.find(filter, { session }).toArray();
     return docs.map(d => this._docToEdge(d));
+  }
+
+  async getTotalEdgeCount(transaction?: ITransactionHandle): Promise<number> {
+    const session = transaction?.context as ClientSession | undefined;
+    return this._edges.countDocuments({ graphId: this._graphId }, { session });
   }
 
   // ---------------------------------------------------------------------------

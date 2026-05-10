@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   GraphManager.init({
     cache: {
       maxNodesCount: 10000,
-      maxEdgesCount: 50000,
+      maxEdgesCount: 20000,
       cacheStore: 'in-memory',
       evictionStrategy: 'LRU',
       preloadStrategy: 'all'
