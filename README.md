@@ -17,10 +17,7 @@ This package provides the MongoDB storage provider for grafio, extracted from th
 ## Installation
 
 ```bash
-npm install grafio-mongo mongodb
-
-# peer dependencies
-npm install grafio
+npm install grafio-mongo
 ```
 
 ## Quick Start
@@ -154,6 +151,76 @@ try {
 - `rollback()` — discards all changes
 - `isFailed()` — returns true if a storage operation failed within the transaction
 - `isActive()` — returns true if transaction is active and not failed
+
+## Cypher Query Language
+
+MongoDB-backed graphs support read-only openCypher-compatible queries via the `CypherEngine`:
+
+```typescript
+import { Graph } from 'grafio';
+import { CypherEngine } from 'grafio/cypher';
+
+const graph = factory.forGraph('my-graph');
+
+// Build your graph
+const alice = await graph.addNode('Person', { name: 'Alice', age: 30 });
+const bob   = await graph.addNode('Person', { name: 'Bob', age: 25 });
+await graph.addEdge(alice.id, bob.id, 'KNOWS', { since: 2020 });
+
+const engine = new CypherEngine(graph);
+
+// Scan nodes by type
+const result = await engine.query('MATCH (p:Person) RETURN p.name, p.age');
+
+// Filter with WHERE
+const adults = await engine.query(
+  'MATCH (p:Person) WHERE p.age > 25 RETURN p.name'
+);
+
+// Follow relationships
+const friends = await engine.query(
+  'MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name, b.name'
+);
+
+// Multi-hop traversal
+const network = await engine.query(
+  'MATCH (a:Person)-[:KNOWS*1..2]->(b:Person) RETURN DISTINCT a.name, b.name'
+);
+
+// Parameterized queries
+const byName = await engine.query(
+  'MATCH (p:Person {name: $name}) RETURN p',
+  { name: 'Alice' }
+);
+
+// Pagination
+const page = await engine.query(
+  'MATCH (p:Person) RETURN p ORDER BY p.age DESC SKIP 0 LIMIT 10'
+);
+```
+
+### Supported Clauses
+
+| Clause | Support | Notes |
+|--------|---------|-------|
+| `MATCH` | ✅ Read-only patterns | Typed/untyped nodes, directed edges, multi-label `(n:A\|B)`, inline property maps |
+| `WHERE` | ✅ Full expressions | `AND`/`OR`/`NOT`, comparisons, `IN`, `NOT IN`, `IS NULL`, `IS NOT NULL` |
+| `RETURN` | ✅ With `DISTINCT` | Property access, aliases with `AS` |
+| `ORDER BY` | ✅ ASC/DESC | Default ASC when omitted |
+| `SKIP` | ✅ Literal + `$param` | Evaluated at runtime |
+| `LIMIT` | ✅ Literal + `$param` | Evaluated at runtime |
+| `CREATE` / `DELETE` / `SET` / `REMOVE` / `MERGE` | ❌ Rejected | Validation gate prevents execution |
+
+### Variable-length Edge Syntax
+
+| Syntax | Meaning |
+|--------|---------|
+| `[*]` | Unbounded (up to 100 hops) |
+| `[*1..3]` | 1 to 3 hops (BFS by default) |
+| `[*2]` | Exactly 2 hops |
+| `[*..5]` | Up to 5 hops |
+
+> **Strategy selection**: BFS is used by default for multi-hop expansion. When `LIMIT` is present, DFS is selected automatically for better early-result performance.
 
 ## Graph Operations
 
