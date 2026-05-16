@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.0.0] - 2026-05-6
+
+### ✨ New Features
+1. **Updated to latest grafio v7.0.0**
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+
+### 🚨 Breaking Changes
+1. **`IStorageProvider` Interface Refactoring**
+   - Refer Grafio CHANGELOG for breaking changes ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+
 ## [2.0.0] - 2026-05-11
 
 ### ✨ New Features

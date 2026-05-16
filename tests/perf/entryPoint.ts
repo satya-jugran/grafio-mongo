@@ -14,14 +14,14 @@ import { MongoClient } from 'mongodb';
 import { MongoGraphFactory } from '../../src/MongoGraphFactory';
 // Import unified perf infrastructure from grafio
 import {
-  buildScenarios,           // Returns scenarios with mongodb iteration factors
   buildGraph,               // Creates test graph
   runScenario,              // Runs a single scenario
   printReport,              // Prints results table
   printScaleHeader,         // Prints scale header
   printSectionTitle,         // Prints section title
-  ITERATION_FACTORS,         // Iteration multipliers
-  GraphMeta                   // Type for graph metadata returned by buildGraph
+  GraphMeta,                   // Type for graph metadata returned by buildGraph
+  buildCommonScenarios,
+  buildCommonScenariosCypher
 } from 'grafio/testing/perf';
 
 import { Graph, GraphManager } from 'grafio';
@@ -37,9 +37,9 @@ interface ScaleConfig {
 }
 
 const SCALES: ScaleConfig[] = [
-  { label: 'Small  (1k nodes)', nodeCount: 1_000, edgesPerNode: 3 },
-  { label: 'Medium (5k nodes)', nodeCount: 5_000, edgesPerNode: 3 },
-  { label: 'Large  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
+  { label: 'Small  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
+  { label: 'Medium (50k nodes)', nodeCount: 50_000, edgesPerNode: 3 },
+  { label: 'Large  (100k nodes)', nodeCount: 100_000, edgesPerNode: 3 },
 ];
 
 // ─── MongoDB Configuration ────────────────────────────────────────────────────
@@ -65,13 +65,7 @@ async function main(): Promise<void> {
   };
 
   GraphManager.init({
-    cache: {
-      maxNodesCount: 10000,
-      maxEdgesCount: 20000,
-      cacheStore: 'in-memory',
-      evictionStrategy: 'LRU',
-      preloadStrategy: 'all'
-    }
+    cache: undefined
   });
 
   console.log('\n');
@@ -134,7 +128,7 @@ async function main(): Promise<void> {
     // ── 7. Run all benchmark scenarios ─────────────────────────────────────
     printSectionTitle('Running benchmark scenarios');
 
-    const scenarios = buildScenarios('mongodb', scale.nodeCount);
+    const scenarios = buildCommonScenariosCypher(scale.nodeCount, 0.05);
     const results = [];
 
     for (const scenario of scenarios) {

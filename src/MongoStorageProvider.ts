@@ -15,8 +15,21 @@ import {
   ITransactionHandle,
   EdgeData,
   GraphData,
+  StorageQueryOptions,
   isPrimitive
 } from 'grafio';
+
+/**
+ * Property filter specification with support for recursive AND/OR chaining.
+ * This type is defined locally because grafio may not yet export it.
+ */
+export interface QueryOptionsFilterProperty {
+  key?: string;
+  value?: unknown;
+  op?: '=' | '<>' | '>' | '<' | '>=' | '<=' | 'CONTAINS' | 'STARTS_WITH' | 'ENDS_WITH' | 'IN' | 'NOT_IN' | 'IS_NULL' | 'IS_NOT_NULL';
+  AND?: QueryOptionsFilterProperty[];
+  OR?: QueryOptionsFilterProperty[];
+}
 
 import {
   NodeAlreadyExistsError,
@@ -136,8 +149,8 @@ export class MongoStorageProvider implements IStorageProvider {
    * @param opts - Optional configuration including graphId (partition key).
    */
   constructor(db: Db, opts: MongoStorageProviderOptions = {}) {
-    const nodesColl = opts.nodesCollection ?? 'sgdb_nodes';
-    const edgesColl = opts.edgesCollection ?? 'sgdb_edges';
+    const nodesColl = opts.nodesCollection ?? 'grafiodb_nodes';
+    const edgesColl = opts.edgesCollection ?? 'grafiodb_edges';
 
     this._nodes = db.collection<NodeDoc>(nodesColl);
     this._edges = db.collection<EdgeDoc>(edgesColl);
@@ -244,12 +257,76 @@ export class MongoStorageProvider implements IStorageProvider {
     return doc ? this._docToNode(doc) : undefined;
   }
 
-  async getAllNodes(limit?: number, orderBy?: IOrderBy, transaction?: ITransactionHandle): Promise<NodeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
+  async getNodeCount(options?: StorageQueryOptions): Promise<number> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const filter = this._buildNodeFilter(options);
+    return this._nodes.countDocuments(filter, { session });
+  }
+
+  async aggregateNodeProperty(key: string, options?: StorageQueryOptions): Promise<{ count: number; sum?: number; avg?: number; min?: number; max?: number }> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const matchFilter = this._buildNodeFilter(options);
+
+    // Properly combine with aggregate's own property existence filter
+    const propFilter: Document = { $exists: true, $type: 'number' };
+    if (matchFilter.$and) {
+      matchFilter.$and.push({ [`properties.${key}`]: propFilter });
+    } else {
+      matchFilter[`properties.${key}`] = propFilter;
+    }
+
+    const pipeline: Document[] = [
+      { $match: matchFilter },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          sum: { $sum: `$properties.${key}` },
+          avg: { $avg: `$properties.${key}` },
+          min: { $min: `$properties.${key}` },
+          max: { $max: `$properties.${key}` },
+        },
+      },
+    ];
+
+    interface AggregationResult extends Document {
+      _id: null;
+      count: number;
+      sum: number;
+      avg: number;
+      min: number;
+      max: number;
+    }
+
+    const result = await this._nodes.aggregate<AggregationResult>(pipeline, { session }).next();
+
+    if (!result) {
+      return { count: 0 };
+    }
+
+    return {
+      count: result.count,
+      sum: result.sum,
+      avg: result.avg,
+      min: result.min,
+      max: result.max,
+    };
+  }
+
+  async getNodes(options?: StorageQueryOptions): Promise<NodeData[]> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const filter = this._buildNodeFilter(options);
     const nodes: NodeData[] = [];
-    const cursor = this._nodes.find({ graphId: this._graphId }, { session }).batchSize(this._batchSize);
-    if (orderBy) cursor.sort(orderBy.field, orderBy.direction);
-    if (limit) cursor.limit(limit);
+    const cursor = this._nodes.find(filter, { session }).batchSize(this._batchSize);
+
+    if (options?.orderBy) {
+      const { field, direction } = options.orderBy;
+      const sortField = field === 'createdOn' || field === 'updatedOn' ? field : `properties.${field}`;
+      cursor.sort(sortField, direction);
+    }
+    if (options?.limit) {
+      cursor.limit(options.limit);
+    }
 
     for await (const doc of cursor) {
       nodes.push(this._docToNode(doc));
@@ -257,46 +334,144 @@ export class MongoStorageProvider implements IStorageProvider {
     return nodes;
   }
 
-  async getNodesByType(type: string, transaction?: ITransactionHandle): Promise<NodeData[]> {
+  // ---------------------------------------------------------------------------
+  // Edge queries
+  // ---------------------------------------------------------------------------
+
+  async hasEdge(id: string, transaction?: ITransactionHandle): Promise<boolean> {
     const session = transaction?.context as ClientSession | undefined;
-    const docs = await this._nodes.find({ graphId: this._graphId, type }, { session }).toArray();
-    return docs.map(d => this._docToNode(d));
+    const doc = await this._edges.findOne(
+      { graphId: this._graphId, id },
+      { projection: { _id: 1 }, session },
+    );
+    return doc !== null;
   }
 
-  async getNodesByProperty(key: string, value: unknown, nodeType?: string, transaction?: ITransactionHandle): Promise<NodeData[]> {
+  async getEdge(id: string, transaction?: ITransactionHandle): Promise<EdgeData | undefined> {
     const session = transaction?.context as ClientSession | undefined;
-    const filter: Filter<NodeDoc> = {
-      graphId: this._graphId,
-      [`properties.${key}`]: value as unknown as WithId<NodeDoc>[keyof WithId<NodeDoc>],
-    };
-    if (nodeType !== undefined) {
-      filter.type = nodeType;
+    const doc = await this._edges.findOne({ graphId: this._graphId, id }, { session });
+    return doc ? this._docToEdge(doc) : undefined;
+  }
+
+  async getEdgeCount(options?: StorageQueryOptions): Promise<number> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const filter = this._buildEdgeFilter(options);
+    return this._edges.countDocuments(filter, { session });
+  }
+
+  async aggregateEdgeProperty(key: string, options?: StorageQueryOptions): Promise<{ count: number; sum?: number; avg?: number; min?: number; max?: number }> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const matchFilter = this._buildEdgeFilter(options);
+
+    // Properly combine with aggregate's own property existence filter
+    const propFilter: Document = { $exists: true, $type: 'number' };
+    if (matchFilter.$and) {
+      matchFilter.$and.push({ [`properties.${key}`]: propFilter });
+    } else {
+      matchFilter[`properties.${key}`] = propFilter;
     }
-    const docs = await this._nodes.find(filter, { session }).toArray();
-    return docs.map(d => this._docToNode(d));
-  }
 
-  async getTotalNodeCount(transaction?: ITransactionHandle): Promise<number> {
-    const session = transaction?.context as ClientSession | undefined;
-    return this._nodes.countDocuments({ graphId: this._graphId }, { session });
-  }
+    const pipeline: Document[] = [
+      { $match: matchFilter },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          sum: { $sum: `$properties.${key}` },
+          avg: { $avg: `$properties.${key}` },
+          min: { $min: `$properties.${key}` },
+          max: { $max: `$properties.${key}` },
+        },
+      },
+    ];
 
-  async getEdgesByProperty(key: string, value: unknown, edgeType?: string, transaction?: ITransactionHandle): Promise<EdgeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
-    const filter: Filter<EdgeDoc> = {
-      graphId: this._graphId,
-      [`properties.${key}`]: value as unknown as WithId<EdgeDoc>[keyof WithId<EdgeDoc>],
-    };
-    if (edgeType !== undefined) {
-      filter.type = edgeType;
+    interface AggregationResult extends Document {
+      _id: null;
+      count: number;
+      sum: number;
+      avg: number;
+      min: number;
+      max: number;
     }
-    const docs = await this._edges.find(filter, { session }).toArray();
-    return docs.map(d => this._docToEdge(d));
+
+    const result = await this._edges.aggregate<AggregationResult>(pipeline, { session }).next();
+
+    if (!result) {
+      return { count: 0 };
+    }
+
+    return {
+      count: result.count,
+      sum: result.sum,
+      avg: result.avg,
+      min: result.min,
+      max: result.max,
+    };
   }
 
-  async getTotalEdgeCount(transaction?: ITransactionHandle): Promise<number> {
-    const session = transaction?.context as ClientSession | undefined;
-    return this._edges.countDocuments({ graphId: this._graphId }, { session });
+  async getEdges(options?: StorageQueryOptions): Promise<EdgeData[]> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const filter = this._buildEdgeFilter(options);
+    const edges: EdgeData[] = [];
+    const cursor = this._edges.find(filter, { session }).batchSize(this._batchSize);
+
+    if (options?.orderBy) {
+      const { field, direction } = options.orderBy;
+      const sortField = field === 'createdOn' || field === 'updatedOn' ? field : `properties.${field}`;
+      cursor.sort(sortField, direction);
+    }
+    if (options?.limit) {
+      cursor.limit(options.limit);
+    }
+
+    for await (const doc of cursor) {
+      edges.push(this._docToEdge(doc));
+    }
+    return edges;
+  }
+
+  async getEdgesBySource(nodeId: string, options?: StorageQueryOptions): Promise<EdgeData[]> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const baseFilter = { graphId: this._graphId, sourceId: nodeId };
+    const filter = this._buildEdgeFilter(options, baseFilter);
+    const edges: EdgeData[] = [];
+    const cursor = this._edges.find(filter, { session }).batchSize(this._batchSize);
+
+    if (options?.orderBy) {
+      const { field, direction } = options.orderBy;
+      const sortField = field === 'createdOn' || field === 'updatedOn' ? field : `properties.${field}`;
+      cursor.sort(sortField, direction);
+    }
+    if (options?.limit) {
+      cursor.limit(options.limit);
+    }
+
+    for await (const doc of cursor) {
+      edges.push(this._docToEdge(doc));
+    }
+    return edges;
+  }
+
+  async getEdgesByTarget(nodeId: string, options?: StorageQueryOptions): Promise<EdgeData[]> {
+    const session = options?.transaction?.context as ClientSession | undefined;
+    const baseFilter = { graphId: this._graphId, targetId: nodeId };
+    const filter = this._buildEdgeFilter(options, baseFilter);
+    const edges: EdgeData[] = [];
+    const cursor = this._edges.find(filter, { session }).batchSize(this._batchSize);
+
+    if (options?.orderBy) {
+      const { field, direction } = options.orderBy;
+      const sortField = field === 'createdOn' || field === 'updatedOn' ? field : `properties.${field}`;
+      cursor.sort(sortField, direction);
+    }
+    if (options?.limit) {
+      cursor.limit(options.limit);
+    }
+
+    for await (const doc of cursor) {
+      edges.push(this._docToEdge(doc));
+    }
+    return edges;
   }
 
   // ---------------------------------------------------------------------------
@@ -334,60 +509,6 @@ export class MongoStorageProvider implements IStorageProvider {
   async deleteEdge(id: string, transaction?: ITransactionHandle): Promise<void> {
     const session = transaction?.context as ClientSession | undefined;
     await this._edges.deleteOne({ graphId: this._graphId, id }, { session });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Edge queries
-  // ---------------------------------------------------------------------------
-
-  async hasEdge(id: string, transaction?: ITransactionHandle): Promise<boolean> {
-    const session = transaction?.context as ClientSession | undefined;
-    const doc = await this._edges.findOne(
-      { graphId: this._graphId, id },
-      { projection: { _id: 1 }, session },
-    );
-    return doc !== null;
-  }
-
-  async getEdge(id: string, transaction?: ITransactionHandle): Promise<EdgeData | undefined> {
-    const session = transaction?.context as ClientSession | undefined;
-    const doc = await this._edges.findOne({ graphId: this._graphId, id }, { session });
-    return doc ? this._docToEdge(doc) : undefined;
-  }
-
-  async getAllEdges(limit?: number, orderBy?: IOrderBy, transaction?: ITransactionHandle): Promise<EdgeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
-    const edges: EdgeData[] = [];
-    const cursor = this._edges.find({ graphId: this._graphId }, { session }).batchSize(this._batchSize);
-    if (orderBy) cursor.sort(orderBy.field, orderBy.direction);
-    if (limit) cursor.limit(limit);
-
-    for await (const doc of cursor) {
-      edges.push(this._docToEdge(doc));
-    }
-    return edges;
-  }
-
-  async getEdgesByType(type: string, transaction?: ITransactionHandle): Promise<EdgeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
-    const docs = await this._edges.find({ graphId: this._graphId, type }, { session }).toArray();
-    return docs.map(d => this._docToEdge(d));
-  }
-
-  async getEdgesBySource(nodeId: string, type?: string, transaction?: ITransactionHandle): Promise<EdgeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
-    const filter: Filter<EdgeDoc> = { graphId: this._graphId, sourceId: nodeId };
-    if (type) filter.type = type;
-    const docs = await this._edges.find(filter, { session }).toArray();
-    return docs.map(d => this._docToEdge(d));
-  }
-
-  async getEdgesByTarget(nodeId: string, type?: string, transaction?: ITransactionHandle): Promise<EdgeData[]> {
-    const session = transaction?.context as ClientSession | undefined;
-    const filter: Filter<EdgeDoc> = { graphId: this._graphId, targetId: nodeId };
-    if (type) filter.type = type;
-    const docs = await this._edges.find(filter, { session }).toArray();
-    return docs.map(d => this._docToEdge(d));
   }
 
   // ---------------------------------------------------------------------------
@@ -510,42 +631,56 @@ export class MongoStorageProvider implements IStorageProvider {
    * @param propertyKey - The property name to index
    * @param type - Optional type filter. If provided (not '*' or undefined), creates a compound index on (type, propertyKey)
    */
-  async createIndex(target: 'node' | 'edge', propertyKey: string, type?: string): Promise<void> {
+  async createIndex(target: 'node' | 'edge', propertyKey: string): Promise<void> {
     if (target === 'node') {
       // Always lead with graphId to support partitioned queries efficiently
       const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
 
-      // If type is specified, create compound index on (graphId, type, propertyKey)
-      if (type && type !== '*') {
-        indexFields['type'] = 1;
-        await this._nodes.createIndex(indexFields, {
-          name: `node_graphId_type_${propertyKey}`,
-          background: true
-        });
-      } else {
-        await this._nodes.createIndex(indexFields, {
-          name: `node_graphId_${propertyKey}`,
-          background: true
-        });
-      }
+      await this._nodes.createIndex(indexFields, {
+        name: `node_graphId_${propertyKey}`,
+        background: true
+      });
+      await this._nodes.createIndex({ ...indexFields, type: 1 }, {
+        name: `node_graphId_type_${propertyKey}`,
+        background: true
+      });
     } else {
       // Always lead with graphId to support partitioned queries efficiently
       const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
 
-      // If type is specified, create compound index on (graphId, type, propertyKey)
-      if (type && type !== '*') {
-        indexFields['type'] = 1;
-        await this._edges.createIndex(indexFields, {
-          name: `edge_graphId_type_${propertyKey}`,
-          background: true
-        });
-      } else {
-        await this._edges.createIndex(indexFields, {
-          name: `edge_graphId_${propertyKey}`,
-          background: true
-        });
+      await this._edges.createIndex(indexFields, {
+        name: `edge_graphId_${propertyKey}`,
+        background: true
+      });
+      await this._edges.createIndex({ ...indexFields, type: 1 }, {
+        name: `edge_graphId_type_${propertyKey}`,
+        background: true
+      });
+    }
+  }
+
+  /**
+   * Checks whether an index exists for a node or edge property.
+   *
+   * @param target - Either 'node' or 'edge'
+   * @param propertyKey - The property name to check
+   */
+  async hasIndex(target: 'node' | 'edge', propertyKey: string): Promise<boolean> {
+    const collection = target === 'node' ? this._nodes : this._edges;
+
+    // Build the expected index name(s) - try without type first, then with type
+    const indexNameWithoutType = `${target === 'node' ? 'node' : 'edge'}_graphId_${propertyKey}`;
+    const indexNameWithType = `${target === 'node' ? 'node' : 'edge'}_graphId_type_${propertyKey}`;
+
+    // List all indexes and check if any matches our expected name
+    for await (const index of collection.listIndexes()) {
+      const name = index.name as string;
+      if (name === indexNameWithoutType || name === indexNameWithType) {
+        return true;
       }
     }
+
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -735,6 +870,195 @@ export class MongoStorageProvider implements IStorageProvider {
     } else {
       session.endSession();
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Filter builders
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Builds a MongoDB filter for node queries from StorageQueryOptions.
+   */
+  private _buildNodeFilter(options?: StorageQueryOptions, baseFilter: Filter<NodeDoc> = {}): Filter<NodeDoc> {
+    const filter: Filter<NodeDoc> = { graphId: this._graphId, ...baseFilter };
+    const andConditions: Document[] = [];
+
+    if (options?.filter) {
+      if (options.filter.types && options.filter.types.length > 0) {
+        filter.type = { $in: options.filter.types };
+      }
+      if (options.filter.properties && options.filter.properties.length > 0) {
+        for (const prop of options.filter.properties) {
+          const propFilter = this._buildPropertyFilter(prop);
+          if (propFilter) {
+            andConditions.push(propFilter);
+          }
+        }
+      }
+    }
+
+    // Combine all property filters with $and at top level
+    if (andConditions.length > 0) {
+      filter.$and = andConditions;
+    }
+
+    return filter;
+  }
+
+  /**
+   * Builds a MongoDB filter for edge queries from StorageQueryOptions.
+   */
+  private _buildEdgeFilter(options?: StorageQueryOptions, baseFilter: Filter<EdgeDoc> = {}): Filter<EdgeDoc> {
+    const filter: Filter<EdgeDoc> = { graphId: this._graphId, ...baseFilter };
+    const andConditions: Document[] = [];
+
+    if (options?.filter) {
+      if (options.filter.types && options.filter.types.length > 0) {
+        filter.type = { $in: options.filter.types };
+      }
+      if (options.filter.properties && options.filter.properties.length > 0) {
+        for (const prop of options.filter.properties) {
+          const propFilter = this._buildPropertyFilter(prop);
+          if (propFilter) {
+            andConditions.push(propFilter);
+          }
+        }
+      }
+    }
+
+    // Combine all property filters with $and at top level
+    if (andConditions.length > 0) {
+      filter.$and = andConditions;
+    }
+
+    return filter;
+  }
+
+  /**
+   * Builds a MongoDB filter expression for a property filter specification.
+   * Supports recursive AND/OR chaining via QueryOptionsFilterProperty.
+   */
+  private _buildPropertyFilter(prop: QueryOptionsFilterProperty): Document | undefined {
+    // Handle AND - ALL conditions must match
+    if (prop.AND && prop.AND.length > 0) {
+      const andFilters: Document[] = [];
+      for (const subProp of prop.AND) {
+        const subFilter = this._buildPropertyFilter(subProp);
+        if (subFilter) {
+          andFilters.push(subFilter);
+        }
+      }
+      if (andFilters.length > 0) {
+        return { $and: andFilters };
+      }
+      return undefined;
+    }
+
+    // Handle OR - ANY condition must match
+    if (prop.OR && prop.OR.length > 0) {
+      const orFilters: Document[] = [];
+      for (const subProp of prop.OR) {
+        const subFilter = this._buildPropertyFilter(subProp);
+        if (subFilter) {
+          orFilters.push(subFilter);
+        }
+      }
+      if (orFilters.length > 0) {
+        return { $or: orFilters };
+      }
+      return undefined;
+    }
+
+    // Base case: single property filter with operator
+    // If key is not provided, this is a structural filter (AND/OR only) - no property filter needed
+    if (prop.key === undefined) {
+      return undefined;
+    }
+
+    const op = prop.op ?? '=';
+    const propPath = `properties.${prop.key}`;
+
+    switch (op) {
+      case '=':
+        return { [propPath]: prop.value } as Document;
+      case '<>':
+        return { [propPath]: { $ne: prop.value } } as Document;
+      case '>':
+        return { [propPath]: { $gt: prop.value } } as Document;
+      case '<':
+        return { [propPath]: { $lt: prop.value } } as Document;
+      case '>=':
+        return { [propPath]: { $gte: prop.value } } as Document;
+      case '<=':
+        return { [propPath]: { $lte: prop.value } } as Document;
+      case 'CONTAINS':
+        return { [propPath]: { $regex: String(prop.value), $options: 'i' } } as Document;
+      case 'STARTS_WITH':
+        return { [propPath]: { $regex: `^${this._escapeRegex(String(prop.value))}`, $options: 'i' } } as Document;
+      case 'ENDS_WITH':
+        return { [propPath]: { $regex: `${this._escapeRegex(String(prop.value))}$`, $options: 'i' } } as Document;
+      case 'IN':
+        return { [propPath]: { $in: Array.isArray(prop.value) ? prop.value : [prop.value] } } as Document;
+      case 'NOT_IN':
+        return { [propPath]: { $nin: Array.isArray(prop.value) ? prop.value : [prop.value] } } as Document;
+      case 'IS_NULL':
+        // IS_NULL should match both: field doesn't exist OR field value is null
+        return { $or: [{ [propPath]: null }, { [propPath]: { $exists: false } }] } as Document;
+      case 'IS_NOT_NULL':
+        // IS_NOT_NULL should match: field exists AND value is not null
+        return { $and: [{ [propPath]: { $exists: true } }, { [propPath]: { $ne: null } }] } as Document;
+      default:
+        return { [propPath]: prop.value } as Document;
+    }
+  }
+
+  /**
+   * Builds a MongoDB filter for a simple property (key + operator, no AND/OR).
+   * Returns the filter value directly applicable to properties.key field.
+   */
+  private _buildSimplePropertyFilter(prop: QueryOptionsFilterProperty): unknown {
+    if (prop.key === undefined) {
+      return undefined;
+    }
+
+    const op = prop.op ?? '=';
+    switch (op) {
+      case '=':
+        return prop.value;
+      case '<>':
+        return { $ne: prop.value };
+      case '>':
+        return { $gt: prop.value };
+      case '<':
+        return { $lt: prop.value };
+      case '>=':
+        return { $gte: prop.value };
+      case '<=':
+        return { $lte: prop.value };
+      case 'CONTAINS':
+        return { $regex: String(prop.value), $options: 'i' };
+      case 'STARTS_WITH':
+        return { $regex: `^${this._escapeRegex(String(prop.value))}`, $options: 'i' };
+      case 'ENDS_WITH':
+        return { $regex: `${this._escapeRegex(String(prop.value))}$`, $options: 'i' };
+      case 'IN':
+        return { $in: Array.isArray(prop.value) ? prop.value : [prop.value] };
+      case 'NOT_IN':
+        return { $nin: Array.isArray(prop.value) ? prop.value : [prop.value] };
+      case 'IS_NULL':
+        return { $or: [{ [prop.key]: null }, { [prop.key]: { $exists: false } }] };
+      case 'IS_NOT_NULL':
+        return { $and: [{ [prop.key]: { $exists: true } }, { [prop.key]: { $ne: null } }] };
+      default:
+        return prop.value;
+    }
+  }
+
+  /**
+   * Escapes special regex characters in a string.
+   */
+  private _escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   // ---------------------------------------------------------------------------

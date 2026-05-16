@@ -211,6 +211,99 @@ const page = await engine.query(
 | `LIMIT` | ✅ Literal + `$param` | Evaluated at runtime |
 | `CREATE` / `DELETE` / `SET` / `REMOVE` / `MERGE` | ❌ Rejected | Validation gate prevents execution |
 
+#### Aggregation Functions
+
+```typescript
+// Basic count
+const total = await engine.query('MATCH (p:Person) RETURN COUNT(p) AS total');
+
+// Group by with aggregation
+const byCity = await engine.query(
+  'MATCH (p:Person) RETURN p.city, COUNT(*) AS cnt ORDER BY cnt DESC'
+);
+
+// HAVING clause
+const popular = await engine.query(
+  'MATCH (p:Person) RETURN p.city, COUNT(*) AS cnt HAVING cnt > 1'
+);
+
+// Multiple aggregates
+const stats = await engine.query(
+  'MATCH (p:Person) RETURN MIN(p.age), MAX(p.age), AVG(p.age)'
+);
+
+// Named path variable
+const paths = await engine.query(
+  'MATCH p = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN p'
+);
+```
+
+#### Query Plan — Inspect Execution Steps
+
+Use `getQueryPlan()` to inspect the logical execution plan for a query without running it:
+
+```typescript
+// Get query plan in JSON format (default)
+const planJson = await engine.getQueryPlan('MATCH (p:Person) RETURN p.name');
+// Returns: { plan: { steps: [...] } }
+
+// Get in Text tree format
+const planText = await engine.getQueryPlan('MATCH (p:Person)-[:KNOWS]->(b) RETURN p.name, b.name', undefined, 'text');
+/*
+NodeScanStep (Person)
+  EdgeExpandStep (KNOWS, outgoing)
+    ProjectStep [p.name, b.name]
+*/
+
+// Get in Mermaid flowchart format
+const planMermaid = await engine.getQueryPlan('MATCH (p:Person)-[:KNOWS*1..2]->(b) RETURN p.name', undefined, 'mermaid');
+/*
+flowchart TD
+    Step1[NodeScanStep Person]
+    Step2[EdgeExpandStep KNOWS, 1..2 hops, outgoing]
+    Step3[ProjectStep [p.name]]
+    Step1 --> Step2
+    Step2 --> Step3
+*/
+```
+
+#### Execution Plan — Query Plan with Runtime Statistics
+
+Use `execute()` with the `executionPlan` option to get the query plan enriched with per-step timing and row counts:
+
+```typescript
+const result = await engine.execute(
+  'MATCH (p:Person)-[:KNOWS]->(b:Person) RETURN p.name, b.name',
+  {},
+  { executionPlan: { format: 'json' } }
+);
+
+// result.executionPlan contains the formatted plan with stats
+// result.summary contains timing metadata
+// result.summary.planExecutionStats contains per-step timing data
+
+// Get execution plan in Text format with timing
+const execText = await engine.execute(
+  'MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a.name',
+  {},
+  { executionPlan: { format: 'text' } }
+);
+console.log(execText.executionPlan);
+/*
+NodeScanStep Person (1ms, 33.3%, 2 rows)
+  EdgeExpandStep KNOWS, outgoing (1ms, 33.3%, 5 rows)
+    EdgeExpandStep KNOWS, outgoing (1ms, 33.3%, 3 rows)
+      ProjectStep [a.name]
+*/
+```
+
+Supported formats: `'json'`, `'text'`, `'mermaid'`
+
+The execution plan includes:
+- **timeMs**: Time spent in each step
+- **percentageOfTotal**: Percentage of total query time
+- **rowsOut**: Number of rows output by each step
+
 ### Variable-length Edge Syntax
 
 | Syntax | Meaning |
@@ -221,6 +314,50 @@ const page = await engine.query(
 | `[*..5]` | Up to 5 hops |
 
 > **Strategy selection**: BFS is used by default for multi-hop expansion. When `LIMIT` is present, DFS is selected automatically for better early-result performance.
+
+#### Property Filter Operators
+
+The `filter.properties` option supports various comparison operators:
+
+| Operator | Syntax | Description |
+|----------|--------|-------------|
+| `=` | `{ key: 'age', value: 30 }` | Equality (default) |
+| `<>` | `{ key: 'age', value: 30, op: '<>' }` | Not equal |
+| `>` | `{ key: 'age', value: 25, op: '>' }` | Greater than |
+| `<` | `{ key: 'age', value: 25, op: '<' }` | Less than |
+| `>=` | `{ key: 'age', value: 25, op: '>=' }` | Greater than or equal |
+| `<=` | `{ key: 'age', value: 25, op: '<=' }` | Less than or equal |
+| `CONTAINS` | `{ key: 'name', value: 'John', op: 'CONTAINS' }` | String contains |
+| `STARTS_WITH` | `{ key: 'name', value: 'J', op: 'STARTS_WITH' }` | String prefix |
+| `ENDS_WITH` | `{ key: 'name', value: 'n', op: 'ENDS_WITH' }` | String suffix |
+| `IN` | `{ key: 'city', value: ['NYC', 'LA'], op: 'IN' }` | In array |
+| `NOT_IN` | `{ key: 'city', value: ['SF', 'CHI'], op: 'NOT_IN' }` | Not in array |
+| `IS_NULL` | `{ key: 'age', op: 'IS_NULL' }` | Is null |
+| `IS_NOT_NULL` | `{ key: 'age', op: 'IS_NOT_NULL' }` | Is not null |
+
+**AND/OR Chaining:**
+
+```typescript
+// AND chaining
+const result = await graph.getNodes({
+  filter: {
+    AND: [
+      { key: 'age', value: 25, op: '>' },
+      { key: 'city', value: 'NYC' }
+    ]
+  }
+});
+
+// OR chaining
+const result = await graph.getNodes({
+  filter: {
+    OR: [
+      { key: 'city', value: 'NYC' },
+      { key: 'city', value: 'LA' }
+    ]
+  }
+});
+```
 
 ## Graph Operations
 
@@ -246,8 +383,8 @@ const path = await graph.traverse(alice.id, bob.id, { method: 'bfs' });
 // Type filtering
 const allPersons = await graph.getNodesByType('Person');
 
-// Property queries
-const adults = await graph.getNodesByProperty('age', 30);
+// Property queries with operators
+const adults = await graph.getNodes({ filter: { properties: [{ key: 'age', value: 25, op: '>' }] } });
 
 // DAG check and topological sort
 const isDag = await graph.isDAG();
