@@ -65,7 +65,13 @@ async function main(): Promise<void> {
   };
 
   GraphManager.init({
-    cache: undefined
+    cache: {
+      cacheStore: 'in-memory',
+      maxNodesCount: 100, // Adjust based on available memory and graph size
+      maxEdgesCount: 300, // Adjust based on available memory and graph size
+      preloadStrategy: 'all', // Preload entire graph into cache for best read performance during benchmarks
+      evictionStrategy: 'LRU', // Evict least recently used items when cache limits are exceeded
+    }
   });
 
   console.log('\n');

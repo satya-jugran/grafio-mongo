@@ -257,6 +257,16 @@ export class MongoStorageProvider implements IStorageProvider {
     return doc ? this._docToNode(doc) : undefined;
   }
 
+  async getNodesByIds(ids: string[], transaction?: ITransactionHandle): Promise<Map<string, NodeData>> {
+    const session = transaction?.context as ClientSession | undefined;
+    const cursor = this._nodes.find({ graphId: this._graphId, id: { $in: ids } }, { session });
+    const nodes = new Map<string, NodeData>();
+    for await (const doc of cursor) {
+      nodes.set(doc.id, this._docToNode(doc));
+    }
+    return nodes;
+  }
+
   async getNodeCount(options?: StorageQueryOptions): Promise<number> {
     const session = options?.transaction?.context as ClientSession | undefined;
     const filter = this._buildNodeFilter(options);
