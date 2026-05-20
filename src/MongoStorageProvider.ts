@@ -38,8 +38,19 @@ import {
   EdgeNotFoundError,
   InvalidPropertyError,
   PropertyAlreadyExistsError,
-  PropertyNotFoundError
+  PropertyNotFoundError,
+  GraphError
 } from 'grafio/errors';
+
+/**
+ * Error thrown when attempting to create an index that already exists.
+ */
+export class IndexAlreadyExistsError extends GraphError {
+  constructor(indexName: string) {
+    super(`Index '${indexName}' already exists`);
+    this.name = 'IndexAlreadyExistsError';
+  }
+}
 
 /**
  * MongoDB document shape for nodes.
@@ -83,13 +94,13 @@ export interface MongoStorageProviderOptions {
 
   /**
    * Name of the MongoDB collection for nodes.
-   * @default 'sgdb_nodes'
+   * @default 'grafio_nodes'
    */
   nodesCollection?: string;
 
   /**
    * Name of the MongoDB collection for edges.
-   * @default 'sgdb_edges'
+   * @default 'grafio_edges'
    */
   edgesCollection?: string;
 
@@ -121,8 +132,8 @@ export interface MongoStorageProviderOptions {
  *
  * ## Collections
  * Two collections are used (default names):
- *  - `sgdb_nodes`  — one document per node
- *  - `sgdb_edges`  — one document per edge
+ *  - `grafio_nodes`  — one document per node
+ *  - `grafio_edges`  — one document per edge
  *
  * ## Indexes
  * Call `ensureIndexes()` once on startup. It creates:
@@ -197,6 +208,10 @@ export class MongoStorageProvider implements IStorageProvider {
   // ---------------------------------------------------------------------------
 
   async clear(): Promise<void> {
+    // Delete all named indexes first
+    const indexes = await this.getIndexes();
+    await Promise.all(indexes.map(index => this.deleteIndex(index.name)));
+
     await Promise.all([
       this._nodes.deleteMany({ graphId: this._graphId }),
       this._edges.deleteMany({ graphId: this._graphId }),
@@ -635,62 +650,160 @@ export class MongoStorageProvider implements IStorageProvider {
   }
 
   /**
-   * Creates an index on a node or edge property.
+   * Creates indexes on node or edge properties.
    *
+   * @param name - The name identifier for this index
    * @param target - Either 'node' or 'edge'
-   * @param propertyKey - The property name to index
-   * @param type - Optional type filter. If provided (not '*' or undefined), creates a compound index on (type, propertyKey)
+   * @param propertyKeys - The property names to index
    */
-  async createIndex(target: 'node' | 'edge', propertyKey: string): Promise<void> {
-    if (target === 'node') {
-      // Always lead with graphId to support partitioned queries efficiently
-      const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
+  async createIndex(name: string, target: 'node' | 'edge', propertyKeys: string[]): Promise<void> {
+    // Sort propertyKeys for consistent index naming
+    const sortedPropertyKeys = [...propertyKeys].sort();
 
-      await this._nodes.createIndex(indexFields, {
-        name: `node_graphId_${propertyKey}`,
-        background: true
-      });
-      await this._nodes.createIndex({ ...indexFields, type: 1 }, {
-        name: `node_graphId_type_${propertyKey}`,
-        background: true
-      });
-    } else {
-      // Always lead with graphId to support partitioned queries efficiently
-      const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
+    // Check if index with this name already exists
+    const metadataCollection = this._nodes.db.collection('grafio_index_metadata');
+    const existing = await metadataCollection.findOne({ name, graphId: this._graphId });
+    if (existing) {
+      throw new IndexAlreadyExistsError(name);
+    }
 
-      await this._edges.createIndex(indexFields, {
-        name: `edge_graphId_${propertyKey}`,
-        background: true
-      });
-      await this._edges.createIndex({ ...indexFields, type: 1 }, {
-        name: `edge_graphId_type_${propertyKey}`,
-        background: true
-      });
+    // Store metadata for this named index
+    await metadataCollection.insertOne({
+      name,
+      graphId: this._graphId,
+      target,
+      propertyKeys: sortedPropertyKeys,
+      createdOn: Date.now()
+    });
+
+    for (const propertyKey of sortedPropertyKeys) {
+      if (target === 'node') {
+        // Always lead with graphId to support partitioned queries efficiently
+        const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
+
+        await this._nodes.createIndex(indexFields, {
+          name: `${name}_node_graphId_${propertyKey}`,
+          background: true
+        });
+        await this._nodes.createIndex({ ...indexFields, type: 1 }, {
+          name: `${name}_node_graphId_type_${propertyKey}`,
+          background: true
+        });
+      } else {
+        // Always lead with graphId to support partitioned queries efficiently
+        const indexFields: Record<string, 1> = { graphId: 1, [`properties.${propertyKey}`]: 1 };
+
+        await this._edges.createIndex(indexFields, {
+          name: `${name}_edge_graphId_${propertyKey}`,
+          background: true
+        });
+        await this._edges.createIndex({ ...indexFields, type: 1 }, {
+          name: `${name}_edge_graphId_type_${propertyKey}`,
+          background: true
+        });
+      }
     }
   }
 
   /**
-   * Checks whether an index exists for a node or edge property.
+   * Checks whether an index exists for node or edge properties.
    *
    * @param target - Either 'node' or 'edge'
-   * @param propertyKey - The property name to check
+   * @param propertyKeys - The property names to check
    */
-  async hasIndex(target: 'node' | 'edge', propertyKey: string): Promise<boolean> {
-    const collection = target === 'node' ? this._nodes : this._edges;
+  async hasIndex(target: 'node' | 'edge', propertyKeys: string[]): Promise<boolean> {
+    const sortedPropertyKeys = [...propertyKeys].sort();
 
-    // Build the expected index name(s) - try without type first, then with type
-    const indexNameWithoutType = `${target === 'node' ? 'node' : 'edge'}_graphId_${propertyKey}`;
-    const indexNameWithType = `${target === 'node' ? 'node' : 'edge'}_graphId_type_${propertyKey}`;
+    // Find all indexes for this target
+    const metadataCollection = this._nodes.db.collection('grafio_index_metadata');
+    const cursor = metadataCollection.find({ graphId: this._graphId, target });
 
-    // List all indexes and check if any matches our expected name
-    for await (const index of collection.listIndexes()) {
-      const name = index.name as string;
-      if (name === indexNameWithoutType || name === indexNameWithType) {
+    for await (const metadata of cursor) {
+      const indexPropertyKeys = metadata.propertyKeys as string[];
+      const sortedIndexPropertyKeys = [...indexPropertyKeys].sort();
+
+      // Check if this index contains all the requested propertyKeys
+      const hasAllKeys = sortedPropertyKeys.every(key => sortedIndexPropertyKeys.includes(key));
+      if (hasAllKeys) {
         return true;
       }
     }
 
     return false;
+  }
+
+  /**
+   * Retrieves metadata for a named index.
+   *
+   * @param name - The name of the index
+   */
+  async getIndex(name: string): Promise<{ name: string; target: 'node' | 'edge'; propertyKeys: string[] } | undefined> {
+    const metadataCollection = this._nodes.db.collection('grafio_index_metadata');
+    const metadata = await metadataCollection.findOne({ name, graphId: this._graphId });
+
+    if (!metadata) {
+      return undefined;
+    }
+
+    return {
+      name: metadata.name as string,
+      target: metadata.target as 'node' | 'edge',
+      propertyKeys: metadata.propertyKeys as string[]
+    };
+  }
+
+  /**
+   * Deletes an index by name.
+   *
+   * @param name - The name of the index to delete
+   */
+  async deleteIndex(name: string): Promise<void> {
+    const metadataCollection = this._nodes.db.collection('grafio_index_metadata');
+    const metadata = await metadataCollection.findOne({ name, graphId: this._graphId });
+
+    if (!metadata) {
+      throw new Error(`Index with name '${name}' does not exist`);
+    }
+
+    const target = metadata.target as 'node' | 'edge';
+    const propertyKeys = metadata.propertyKeys as string[];
+    const collection = target === 'node' ? this._nodes : this._edges;
+
+    // Delete all MongoDB indexes associated with this named index
+    for (const propertyKey of propertyKeys) {
+      try {
+        await collection.dropIndex(`${name}_${target === 'node' ? 'node' : 'edge'}_graphId_${propertyKey}`);
+      } catch {
+        // Index may not exist, ignore
+      }
+      try {
+        await collection.dropIndex(`${name}_${target === 'node' ? 'node' : 'edge'}_graphId_type_${propertyKey}`);
+      } catch {
+        // Index may not exist, ignore
+      }
+    }
+
+    // Delete metadata
+    await metadataCollection.deleteOne({ name, graphId: this._graphId });
+  }
+
+  /**
+   * Retrieves all indexes.
+   */
+  async getIndexes(): Promise<{ name: string; target: 'node' | 'edge'; propertyKeys: string[] }[]> {
+    const metadataCollection = this._nodes.db.collection('grafio_index_metadata');
+    const cursor = metadataCollection.find({ graphId: this._graphId });
+
+    const indexes: { name: string; target: 'node' | 'edge'; propertyKeys: string[] }[] = [];
+    for await (const metadata of cursor) {
+      indexes.push({
+        name: metadata.name as string,
+        target: metadata.target as 'node' | 'edge',
+        propertyKeys: metadata.propertyKeys as string[]
+      });
+    }
+
+    return indexes;
   }
 
   // ---------------------------------------------------------------------------

@@ -184,7 +184,7 @@ async function importIntoMongo(
   const graph = await factory.fromGraphData(jsonData, graphId);
 
   // Create indexes for benchmark query patterns
-  await graph.createIndex('node', 'active');
+  await graph.createIndex('index_active', 'node', ['active']);
 
   // Create a new GraphMeta with the MongoDB-backed graph
   return {
