@@ -45,7 +45,7 @@ const SCALES: ScaleConfig[] = [
 // ─── MongoDB Configuration ────────────────────────────────────────────────────
 // Default connection string. Override via MONGODB_URI env variable.
 
-const DEFAULT_URI = 'mongodb://localhost:27017';
+const DEFAULT_URI = 'mongodb://mongodb:27017,mongodb2:27018,mongodb3:27019/?replicaSet=rs0';
 const DEFAULT_DB = 'grafio-perf';
 
 interface MongoConfig {
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     // ── 7. Run all benchmark scenarios ─────────────────────────────────────
     printSectionTitle('Running benchmark scenarios');
 
-    const scenarios = buildCommonScenariosCypher(scale.nodeCount, 0.05);
+    const scenarios = buildCommonScenariosCypher(scale.nodeCount, 0.05, 8);
     const results = [];
 
     for (const scenario of scenarios) {
