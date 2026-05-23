@@ -60,7 +60,7 @@ export class IndexAlreadyExistsError extends GraphError {
 interface NodeDoc extends Document {
   id: string;
   graphId: string;
-  type: string;
+  labels: string[];
   createdOn: number;
   updatedOn: number;
   properties: Record<string, unknown>;
@@ -192,7 +192,7 @@ export class MongoStorageProvider implements IStorageProvider {
   async ensureIndexes(): Promise<void> {
     // Node indexes — compound unique index on (graphId, id) ensures element id uniqueness per graph
     await this._nodes.createIndex({ graphId: 1, id: 1 }, { unique: true, name: 'node_graph_id_unique' });
-    await this._nodes.createIndex({ graphId: 1, type: 1 }, { name: 'node_graph_type' });
+    await this._nodes.createIndex({ graphId: 1, labels: 1 }, { name: 'node_graph_labels' });
 
     // Edge indexes
     await this._edges.createIndex({ graphId: 1, id: 1 }, { unique: true, name: 'edge_graph_id_unique' });
@@ -237,7 +237,7 @@ export class MongoStorageProvider implements IStorageProvider {
       await this._nodes.insertOne({
         id: node.id,
         graphId: this._graphId,
-        type: node.type,
+        labels: node.labels,
         createdOn: node.createdOn,
         updatedOn: node.updatedOn,
         properties: node.properties,
@@ -623,7 +623,7 @@ export class MongoStorageProvider implements IStorageProvider {
       const nodeDocs = data.nodes.map(n => ({
         id: n.id,
         graphId: this._graphId,
-        type: n.type,
+        labels: n.labels,
         createdOn: n.createdOn ?? Date.now(),
         updatedOn: n.updatedOn ?? Date.now(),
         properties: n.properties,
@@ -1008,7 +1008,7 @@ export class MongoStorageProvider implements IStorageProvider {
 
     if (options?.filter) {
       if (options.filter.types && options.filter.types.length > 0) {
-        filter.type = { $in: options.filter.types };
+        filter.labels = { $in: options.filter.types };
       }
       if (options.filter.properties && options.filter.properties.length > 0) {
         for (const prop of options.filter.properties) {
@@ -1191,7 +1191,7 @@ export class MongoStorageProvider implements IStorageProvider {
   private _docToNode(doc: WithId<NodeDoc>): NodeData {
     return {
       id: doc.id,
-      type: doc.type,
+      labels: doc.labels,
       createdOn: doc.createdOn,
       updatedOn: doc.updatedOn,
       properties: doc.properties,

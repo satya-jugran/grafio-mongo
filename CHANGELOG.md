@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.4.0] - 2026-05-24
+### ✨ New Features
+1. **Updated to latest grafio v7.4.0**
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+
 ## [3.3.0] - 2026-05-20
 ### ✨ New Features
 1. **Updated to latest grafio v7.3.0**
