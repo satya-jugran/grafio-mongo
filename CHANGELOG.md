@@ -2,9 +2,22 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.12.0] - 2026-05-30
+### ✨ New Features
+1. **Implemented `IStorageProvider.removeNodeLabels` in `MongoStorageProvider`**
+   - Removes specified labels from a node's `labels` array using MongoDB's atomic `$pull` + `$in` operator in a single `updateOne` call.
+   - Throws `NodeNotFoundError` if the node does not exist.
+   - Labels in the argument not present on the node are silently ignored (consistent with `InMemoryStorageProvider` behaviour).
+   - Fully supports optional transaction (`ClientSession`) passthrough.
+
+## [3.11.0] - 2026-05-24
+### ✨ New Features
+1. **Updated to latest grafio v7.11.0**
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+
 ## [3.10.0] - 2026-05-24
 ### ✨ New Features
-1. **Updated to latest grafio v7.9.0**
+1. **Updated to latest grafio v7.10.0**
    - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
 
 ## [3.9.0] - 2026-05-24

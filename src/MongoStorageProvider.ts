@@ -253,6 +253,29 @@ export class MongoStorageProvider implements IStorageProvider {
     await this._nodes.deleteOne({ graphId: this._graphId, id }, { session });
   }
 
+  /**
+   * Removes the specified labels from a node's labels array.
+   * Labels in the argument that are not present on the node are silently ignored.
+   * @throws NodeNotFoundError if the node does not exist
+   */
+  async removeNodeLabels(nodeId: string, labels: string[], transaction?: ITransactionHandle): Promise<void> {
+    const session = transaction?.context as ClientSession | undefined;
+
+    const node = await this.getNode(nodeId, transaction);
+    if (!node) {
+      throw new NodeNotFoundError(nodeId);
+    }
+
+    await this._nodes.updateOne(
+      { graphId: this._graphId, id: nodeId },
+      {
+        $pull: { labels: { $in: labels } },
+        $set: { updatedOn: Date.now() },
+      } as Document,
+      { session }
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Node queries
   // ---------------------------------------------------------------------------
