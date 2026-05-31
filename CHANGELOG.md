@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.13.0] - 2026-05-31
+### ✨ New Features
+1. **Updated to latest grafio v7.11.0**
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+
 ## [3.12.0] - 2026-05-30
 ### ✨ New Features
 1. **Implemented `IStorageProvider.removeNodeLabels` in `MongoStorageProvider`**
