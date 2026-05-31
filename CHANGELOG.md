@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## [3.13.0] - 2026-05-31
 ### ✨ New Features
-1. **Updated to latest grafio v7.11.0**
+1. **Updated to latest grafio v7.13.0**
    - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md))
 
 ## [3.12.0] - 2026-05-30
