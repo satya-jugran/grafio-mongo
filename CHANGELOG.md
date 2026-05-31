@@ -2,10 +2,22 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.13.1] - 2026-05-31
+### 🐛 Bug Fixes
+1. **`importJSON` now requires empty graph**
+   - Throws `GraphError` if the target graph already contains any nodes
+   - Prevents accidental data corruption when importing into an existing graph
+   - Caller must call `clear()` before `importJSON()` on a non-empty graph
+
+### ⚡ Performance
+1. **Removed expensive edge source/target validation from `importJSON`**
+   - Eliminated MongoDB query that checked if edges reference existing nodes
+   - In-memory duplicate ID validation retained (O(n) Set-based, negligible cost)
+
 ## [3.13.0] - 2026-05-31
 ### ✨ New Features
 1. **Updated to latest grafio v7.11.0**
-   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md)) 
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md))
 
 ## [3.12.0] - 2026-05-30
 ### ✨ New Features

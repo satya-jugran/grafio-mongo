@@ -587,12 +587,23 @@ export class MongoStorageProvider implements IStorageProvider {
   /**
    * Imports graph data using MongoDB `insertMany` for efficiency.
    *
-   * Validates referential integrity before writing:
-   *  - Duplicate node ids → NodeAlreadyExistsError
-   *  - Duplicate edge ids → EdgeAlreadyExistsError
-   *  - Edge referencing missing node → NodeNotFoundError
+   * Requires the target graph to be empty. Throws GraphError if the graph
+   * already contains any nodes.
+   *
+   * Validates payload integrity before writing:
+   *  - Graph not empty → GraphError
+   *  - Duplicate node ids in payload → NodeAlreadyExistsError
+   *  - Duplicate edge ids in payload → EdgeAlreadyExistsError
    */
   async importJSON(data: GraphData): Promise<void> {
+    // ---- Require empty graph ----
+    const existingNode = await this._nodes.findOne({ graphId: this._graphId });
+    if (existingNode) {
+      throw new GraphError(
+        `Graph with graphId '${this._graphId}' is not empty. Clear it first before importing.`
+      );
+    }
+
     // ---- Validate duplicate ids in the payload itself ----
     const nodeIdSet = new Set<string>();
     for (const n of data.nodes) {
@@ -603,42 +614,6 @@ export class MongoStorageProvider implements IStorageProvider {
     for (const e of data.edges) {
       if (edgeIdSet.has(e.id)) throw new EdgeAlreadyExistsError(e.id);
       edgeIdSet.add(e.id);
-    }
-
-    // ---- Check for existing ids in the database under this graphId (parallel) ----
-    const nodeIds = data.nodes.map(n => n.id);
-    const edgeIds = data.edges.map(e => e.id);
-
-    const [conflictNode, conflictEdge] = await Promise.all([
-      data.nodes.length > 0
-        ? this._nodes.findOne({ graphId: this._graphId, id: { $in: nodeIds } })
-        : Promise.resolve(null),
-      data.edges.length > 0
-        ? this._edges.findOne({ graphId: this._graphId, id: { $in: edgeIds } })
-        : Promise.resolve(null),
-    ]);
-    if (conflictNode) throw new NodeAlreadyExistsError(conflictNode.id);
-    if (conflictEdge) throw new EdgeAlreadyExistsError(conflictEdge.id);
-
-    // ---- Validate edge source/target references ----
-    // Only load the node ids actually referenced by incoming edges (avoids loading all nodes)
-    const referencedIds = [...nodeIdSet]; // ids from incoming nodes already added above
-    for (const e of data.edges) {
-      referencedIds.push(e.sourceId, e.targetId);
-    }
-    const uniqueReferencedIds = [...new Set(referencedIds)];
-    const existingIdSet = new Set(
-      await this._nodes
-        .find({ graphId: this._graphId, id: { $in: uniqueReferencedIds } }, { projection: { id: 1 } })
-        .toArray()
-        .then(docs => docs.map(d => d.id))
-    );
-
-    for (const id of nodeIdSet) existingIdSet.add(id);
-
-    for (const e of data.edges) {
-      if (!existingIdSet.has(e.sourceId)) throw new NodeNotFoundError(e.sourceId);
-      if (!existingIdSet.has(e.targetId)) throw new NodeNotFoundError(e.targetId);
     }
 
     // ---- Bulk insert (batched) ----
