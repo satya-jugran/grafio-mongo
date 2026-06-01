@@ -1,6 +1,6 @@
 {
   "name": "grafio-mongo",
-  "version": "3.13.1",
+  "version": "3.14.0",
   "description": "MongoDB storage backend for grafio",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   },
   "peerDependencies": {},
   "dependencies": {
-    "grafio": ">=7.13.0",
+    "grafio": ">=7.14.0",
     "mongodb": ">=5.0.0"
   },
   "devDependencies": {

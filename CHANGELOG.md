@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [3.14.0] - 2026-06-01
+### ✨ New Features
+1. **Updated to latest grafio v7.14.0**
+   - Refer Grafio CHANGELOG for new features introduced ([Grafio-CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md))
+
 ## [3.13.1] - 2026-05-31
 ### 🐛 Bug Fixes
 1. **`importJSON` now requires empty graph**
