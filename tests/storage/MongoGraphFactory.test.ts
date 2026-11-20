@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it, test } from '@jest/globals';
+import { describe, expect, it } from '@jest/globals';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 
@@ -19,19 +19,18 @@ runGraphFactoryScenarios(
     await factory.ensureIndexes();
     return factory;
   },
-  async () => { },
+  async () => {},
   async () => {
     await client.close();
     await mongoServer.stop();
   },
-  async () => {
+  () => {
     describe('MongoGraphFactory', () => {
-
       it('should import graph data and return a Graph instance', async () => {
         const data = {
           nodes: [
-            { id: 'n1', type: 'Person', properties: { name: 'Alice' } },
-            { id: 'n2', type: 'Person', properties: { name: 'Bob' } },
+            { id: 'n1', labels: ['Person'], properties: { name: 'Alice' } },
+            { id: 'n2', labels: ['Person'], properties: { name: 'Bob' } },
           ],
           edges: [
             { id: 'e1', sourceId: 'n1', targetId: 'n2', type: 'KNOWS', properties: {} },
@@ -53,7 +52,7 @@ runGraphFactoryScenarios(
       it('should use default graphId when not specified', async () => {
         const data = {
           nodes: [
-            { id: 'n1', type: 'Person', properties: { name: 'Carol' } },
+            { id: 'n1', labels: ['Person'], properties: { name: 'Carol' } },
           ],
           edges: [],
         };
@@ -69,7 +68,7 @@ runGraphFactoryScenarios(
         const data = {
           graphId: 'other-graph',
           nodes: [
-            { id: 'n1', type: 'Person', properties: { name: 'ShouldNotImport' } },
+            { id: 'n1', labels: ['Person'], properties: { name: 'ShouldNotImport' } },
           ],
           edges: [],
         };
@@ -84,7 +83,7 @@ runGraphFactoryScenarios(
         const data = {
           graphId: 'my-graph',
           nodes: [
-            { id: 'n1', type: 'Person', properties: { name: 'ShouldImport' } },
+            { id: 'n1', labels: ['Person'], properties: { name: 'ShouldImport' } },
           ],
           edges: [],
         };
@@ -98,5 +97,3 @@ runGraphFactoryScenarios(
     });
   },
 );
-
-

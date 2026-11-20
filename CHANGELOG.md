@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [4.0.0] - 2026-11-19
+
+### Breaking Changes
+1. **Upgraded Core Dependency to `grafio@^8.0.0`:**
+   - Implemented the `grafio@8.0.0` `IStorageProvider` contract in `MongoStorageProvider`.
+   - Removed the deprecated `v7` granular property methods (`addProperty`, `updateProperty`, `deleteProperty`, `clearProperties`) and `PropertyAlreadyExistsError` / `PropertyNotFoundError` references in favor of unified `patchProperties`.
+2. **Minimum Driver & Toolchain Requirements:**
+   - Raised minimum `mongodb` driver dependency to `>= 7.0.0`.
+   - Upgraded TypeScript to `^7.0.2` and migrated test/benchmark execution to `@swc/jest` + `tsx`.
+   - Isolated production declaration builds (`tsconfig.json` `"types": []`) from Node/Jest ambient globals (`tsconfig.test.json`).
+3. **Topology-Aware `supportsTransactions()`:**
+   - `MongoStorageProvider.supportsTransactions()` now inspects the `MongoClient` topology and returns `false` on standalone `mongod` instances (and `true` on replica sets, `mongos` sharded clusters, and load-balanced clusters), preventing automatic Cypher write transactions from failing on standalone deployments.
+
+### New Features
+1. **Unified Atomic `patchProperties`:**
+   - Single-round-trip `updateOne` handling partial merges (`set`), removals (`unset`), `undefined` key deletion, and full map replacement (`replace: true`) with `isPrimitive` validation.
+2. **Atomic Batch Mutations (`insertNodes`, `insertEdges`):**
+   - Chunked `insertMany` insertion with intra-batch duplicate detection and pre-flight duplicate checks across chunks, preserving `grafio@8.0.0`'s storage-level dangling-edge contract.
+3. **Scoped & Compound Index Management + `indexEpoch`:**
+   - Added `options?: CreateIndexOptions` (`labelOrType`) and `hasIndex(..., labelOrType)` scoping with `partialFilterExpression` isolation across graph partitions and label scopes.
+   - Exposed monotonic `indexEpoch` shared across `MongoGraphFactory.forGraph()` instances for automatic `CypherEngine` `PlanCache` invalidation.
+4. **Distinct Aggregations:**
+   - `aggregateNodeProperty` and `aggregateEdgeProperty` now support `{ distinct: true }` and exclude `NaN` values for parity with `InMemoryStorageProvider`.
+
+### Bug Fixes
+1. **Node Property Index Field Fix:** Fixed `createIndex` indexing `type: 1` instead of `labels: 1` on node collections.
+2. **openCypher Filter Parity:** Escaped regex metacharacters in `CONTAINS`, enforced case-sensitive `CONTAINS`/`STARTS_WITH`/`ENDS_WITH` matching, matched explicit `null` only on `= null`, and guarded null/undefined range comparisons (`>`, `<`, `>=`, `<=`).
+3. **Dead Code Removal & Test Fixes:** Removed unused `_buildSimplePropertyFilter`, fixed `MongoGraphFactory.test.ts` `labels` fixtures, fixed `SocialGraph.mongo.test.ts` lazy provider binding so Facebook Social Graph scenarios run against MongoDB, and updated `tests/perf/entryPoint.ts` for `grafio@8.0.0`.
+
+### Performance Improvements
+1. **Covered Existence Checks (`{ _id: 0, id: 1 }`):** Eliminated WiredTiger document fetches in `hasNode`, `hasEdge`, batch duplicate pre-checks, and `importJSON` emptiness checks.
+2. **Wire-Level Projection Stripping (`{ _id: 0, graphId: 0 }`):** Reduced BSON deserialization overhead and network payload size on node/edge reads and exports.
+3. **In-Memory Index Metadata Cache (`WeakMap<Db, ...>`):** Eliminated repeated `grafio_index_metadata` round-trips during Cypher planning and `hasIndex`/`getIndex`/`getIndexes` calls (configurable via `cacheIndexMetadata`).
+4. **Streamlined Edge Indexes & Single-RTT Operations:** Removed redundant `edge_graph_source` / `edge_graph_target` prefix indexes, collapsed `removeNodeLabels` to a single `updateOne`, short-circuited `getNodesByIds([])`, and parallelized `importJSON` / `exportJSON` streams.
+
 ## [3.15.0] - 2026-06-03
 ### ✨ New Features
 1. **Updated to latest grafio v7.15.0**

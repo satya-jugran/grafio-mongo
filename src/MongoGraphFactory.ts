@@ -3,7 +3,15 @@ import {
   MongoStorageProvider,
   type MongoStorageProviderOptions,
 } from './MongoStorageProvider';
-import { Graph, GraphData, IGraphFactory, GraphManager, CachedStorageProvider, type IStorageProvider } from 'grafio';
+import {
+  Graph,
+  GraphData,
+  IGraphFactory,
+  GraphManager,
+  CachedStorageProvider,
+  type IStorageProvider,
+} from 'grafio';
+
 /**
  * Factory options for MongoGraphFactory — omits graphId since that is set per-call.
  */
@@ -25,16 +33,18 @@ type MongoGraphFactoryOptions = Omit<MongoStorageProviderOptions, 'graphId'>;
  * const graph = factory.forGraph('user-123');
  * await graph.addNode('Person', { name: 'Alice' });
  *
- * @example With caching enabled:
- * const factory = new MongoGraphFactory(db);
- * factory.initCache({
- *   maxNodesCount: 10000,
- *   maxEdgesCount: 20000,
- *   cacheStore: 'in-memory',
- *   evictionStrategy: 'LRU',
- *   preloadStrategy: 'recent',
- *   timestampProperty: 'createdAt',
+ * @example With caching enabled via GraphManager:
+ * GraphManager.init({
+ *   cache: {
+ *     maxNodesCount: 10000,
+ *     maxEdgesCount: 20000,
+ *     cacheStore: 'in-memory',
+ *     evictionStrategy: 'LRU',
+ *     preloadStrategy: 'recent',
+ *   },
  * });
+ *
+ * const factory = new MongoGraphFactory(db);
  * await factory.ensureIndexes();
  *
  * const graph = factory.forGraph('user-123');
@@ -73,8 +83,8 @@ export class MongoGraphFactory implements IGraphFactory {
    * Each returned `Graph` operates on its own isolated partition of the same
    * MongoDB collections.
    *
-   * If `initCache()` was called, the Graph will use CachedStorageProvider
-   * for improved read performance.
+   * If `GraphManager.init({ cache: ... })` was called, the Graph will use
+   * `CachedStorageProvider` for improved read performance.
    *
    * @param graphId - Defaults to `"default"` when omitted.
    */
@@ -96,9 +106,6 @@ export class MongoGraphFactory implements IGraphFactory {
     const mongoProvider = new MongoStorageProvider(this._db, { ...this._opts, graphId });
     const provider = this._wrapWithCacheIfEnabled(mongoProvider, graphId);
 
-    // Filter data to only import nodes/edges that belong to this graphId
-    // If data.graphId is set and doesn't match, skip (data is from different partition)
-    // If data.graphId is not set, import all (backward compatible for legacy data)
     const filteredData: GraphData = {
       graphId,
       nodes: data.graphId === undefined || data.graphId === graphId ? data.nodes : [],
@@ -116,7 +123,7 @@ export class MongoGraphFactory implements IGraphFactory {
    */
   private _wrapWithCacheIfEnabled(
     mongoProvider: MongoStorageProvider,
-    graphId: string
+    graphId: string,
   ): IStorageProvider {
     if (!GraphManager.isInitialized()) {
       return mongoProvider;
@@ -133,11 +140,6 @@ export class MongoGraphFactory implements IGraphFactory {
       return mongoProvider;
     }
 
-    return new CachedStorageProvider(
-      mongoProvider,
-      graphId,
-      cacheManager,
-      cacheConfig
-    );
+    return new CachedStorageProvider(mongoProvider, graphId, cacheManager, cacheConfig);
   }
 }

@@ -7,5 +7,5 @@
     "stripInternal": true,
     "removeComments": true
   },
-  "exclude": ["tests/**/*", "plans/**/*"]
+  "exclude": ["tests/**/*", "plans/**/*", "tsconfig*.json", "jest.config.js"]
 }

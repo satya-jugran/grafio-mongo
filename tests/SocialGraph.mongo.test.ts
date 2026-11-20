@@ -8,6 +8,16 @@ let mongoServer: MongoMemoryServer;
 let client: MongoClient;
 let provider: MongoStorageProvider;
 
+const lazyProvider = new Proxy({} as MongoStorageProvider, {
+  get(_target, prop) {
+    if (!provider) {
+      return undefined;
+    }
+    const value = Reflect.get(provider, prop, provider);
+    return typeof value === 'function' ? value.bind(provider) : value;
+  },
+});
+
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   client = new MongoClient(mongoServer.getUri());
@@ -26,5 +36,5 @@ afterAll(async () => {
 });
 
 describe('Facebook Social Graph (MongoDB)', () => {
-  runSocialGraphScenarios(provider);
+  runSocialGraphScenarios(lazyProvider);
 });

@@ -1,27 +1,32 @@
-/** @type {import('ts-jest').JestConfigWithTsJest} */
+/** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   collectCoverageFrom: ['src/**/*.ts'],
-  coveragePathIgnorePatterns: ['/node_modules/', '/dist/'],
+  coveragePathIgnorePatterns: ['/node_modules/', '/dist/', 'src/index.ts'],
   coverageThreshold: {
     global: {
       branches: 80,
       functions: 80,
       lines: 80,
-      statements: 80
-    }
+      statements: 80,
+    },
   },
   testTimeout: 60000,
   maxWorkers: 1,
-  coverageReporters: [
-    "lcov",
-    "json-summary"
-  ],
+  coverageReporters: ['lcov', 'json-summary'],
   transform: {
-    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { resolveJsonModule: true } }],
+    '^.+\\.tsx?$': [
+      '@swc/jest',
+      {
+        jsc: {
+          parser: { syntax: 'typescript' },
+          target: 'es2022',
+        },
+        module: { type: 'commonjs' },
+      },
+    ],
   },
 };

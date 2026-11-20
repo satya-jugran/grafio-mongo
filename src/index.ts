@@ -1,9 +1,10 @@
 // Re-export MongoDB implementations from grafio-mongo
-export { MongoStorageProvider } from './MongoStorageProvider';
+export { MongoStorageProvider, IndexAlreadyExistsError } from './MongoStorageProvider';
 export type { MongoStorageProviderOptions } from './MongoStorageProvider';
 export { MongoGraphFactory } from './MongoGraphFactory';
 
-// Re-export caching layer from grafio
+// Re-export storage & caching types from grafio
+export type { CreateIndexOptions, IndexMetadata, PropertyPatch } from 'grafio';
 export { GraphManager } from 'grafio';
 export type { GraphManagerConfig, CacheConfig, CacheStats } from 'grafio';
 export { CachedStorageProvider, CacheManager } from 'grafio';

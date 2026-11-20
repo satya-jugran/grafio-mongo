@@ -3,8 +3,8 @@
  * grafio  ·  MongoDB Performance Test Runner
  *
  * Run with:
- *   npm run perf:mongodb
- *   npm run perf:mongodb:gc  (with accurate heap measurements)
+ *   npm run perf
+ *   npm run perf:gc  (with accurate heap measurements)
  *
  * NOTE: MongoDB benchmarks use smaller scales since each operation
  *       involves network I/O. Adjust SCALES based on your hardware.
@@ -12,23 +12,17 @@
 
 import { MongoClient } from 'mongodb';
 import { MongoGraphFactory } from '../../src/MongoGraphFactory';
-// Import unified perf infrastructure from grafio
 import {
-  buildGraph,               // Creates test graph
-  runScenario,              // Runs a single scenario
-  printReport,              // Prints results table
-  printScaleHeader,         // Prints scale header
-  printSectionTitle,         // Prints section title
-  GraphMeta,                   // Type for graph metadata returned by buildGraph
-  buildCommonScenarios,
-  buildCommonScenariosCypher
+  buildGraph,
+  runScenario,
+  printReport,
+  printScaleHeader,
+  printSectionTitle,
+  GraphMeta,
+  buildCommonScenariosCypher,
 } from 'grafio/testing/perf';
 
 import { Graph, GraphManager } from 'grafio';
-
-// ─── Scale Definitions ────────────────────────────────────────────────────────
-// MongoDB provider: operations are more expensive due to network I/O.
-// Use smaller scales to keep benchmarks practical.
 
 interface ScaleConfig {
   label: string;
@@ -37,13 +31,10 @@ interface ScaleConfig {
 }
 
 const SCALES: ScaleConfig[] = [
-  { label: 'Small  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
-  { label: 'Medium (50k nodes)', nodeCount: 50_000, edgesPerNode: 3 },
-  { label: 'Large  (100k nodes)', nodeCount: 100_000, edgesPerNode: 3 },
+  { label: 'Small  (1k nodes)', nodeCount: 1_000, edgesPerNode: 3 },
+  { label: 'Medium (5k nodes)', nodeCount: 5_000, edgesPerNode: 3 },
+  { label: 'Large  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
 ];
-
-// ─── MongoDB Configuration ────────────────────────────────────────────────────
-// Default connection string. Override via MONGODB_URI env variable.
 
 const DEFAULT_URI = 'mongodb://mongodb:27017,mongodb2:27018,mongodb3:27019/?replicaSet=rs0';
 const DEFAULT_DB = 'grafio-perf';
@@ -54,10 +45,7 @@ interface MongoConfig {
   graphId: string;
 }
 
-// ─── Entry Point ──────────────────────────────────────────────────────────────
-
 async function main(): Promise<void> {
-  // ── 1. Parse configuration ───────────────────────────────────────────────
   const config: MongoConfig = {
     uri: process.env.MONGODB_URI || DEFAULT_URI,
     dbName: process.env.MONGODB_DB || DEFAULT_DB,
@@ -67,11 +55,11 @@ async function main(): Promise<void> {
   GraphManager.init({
     cache: {
       cacheStore: 'in-memory',
-      maxNodesCount: 100, // Adjust based on available memory and graph size
-      maxEdgesCount: 300, // Adjust based on available memory and graph size
-      preloadStrategy: 'all', // Preload entire graph into cache for best read performance during benchmarks
-      evictionStrategy: 'LRU', // Evict least recently used items when cache limits are exceeded
-    }
+      maxNodesCount: 100,
+      maxEdgesCount: 300,
+      preloadStrategy: 'all',
+      evictionStrategy: 'LRU',
+    },
   });
 
   console.log('\n');
@@ -85,44 +73,35 @@ async function main(): Promise<void> {
 
   if (typeof global.gc !== 'function') {
     console.log('\n  ⚠  TIP: Run with --expose-gc for more accurate heap measurements.');
-    console.log('     e.g.: npm run perf:mongodb:gc\n');
+    console.log('     e.g.: npm run perf:gc\n');
   } else {
     console.log('\n  ✓  GC available — heap measurements will be accurate.\n');
   }
 
-  // ── 2. Connect to MongoDB ─────────────────────────────────────────────────
   printSectionTitle('Connecting to MongoDB...');
   const client = new MongoClient(config.uri);
   await client.connect();
   const db = client.db(config.dbName);
   console.log('  ✓  Connected\n');
 
-  // ── 3. Create factory and ensure indexes ────────────────────────────────
   const factory = new MongoGraphFactory(db);
   await factory.ensureIndexes();
   console.log('  ✓  Indexes ensured\n');
 
-  // ── 4. Cleanup any existing benchmark data ───────────────────────────────
-  // We'll drop and recreate the graph collection before each scale
-
   for (const scale of SCALES) {
     printScaleHeader(scale.label);
 
-    // ── 5. Clear any existing data for this graphId ────────────────────────
     const clearGraph = factory.forGraph(config.graphId);
     await clearGraph.clear();
 
-    // ── 6. Build the baseline graph (timed) ────────────────────────────────
     printSectionTitle(`Building graph: ${scale.nodeCount.toLocaleString()} nodes @ ${scale.edgesPerNode} edges/node`);
     const buildStart = process.hrtime.bigint();
 
-    // Build the in-memory graph first
     const memMeta = await buildGraph(scale.nodeCount, scale.edgesPerNode, 42, config.graphId);
 
-    // Then export and import into MongoDB
     const jsonData = await memMeta.graph.exportJSON();
     const mongoMeta = await importIntoMongo(factory, jsonData, memMeta, config.graphId);
-    GraphManager.getInstance().getCacheManager()?.invalidateAll(); // Clear cache to ensure fair benchmarking
+    await GraphManager.getInstance().getCacheManager()?.invalidateAll();
     await mongoMeta.graph.warmCache();
     console.log('  ✓  Graph imported into MongoDB and cache warmed');
 
@@ -131,10 +110,9 @@ async function main(): Promise<void> {
     console.log(`  ✓  Built: ${mongoMeta.nodeCount.toLocaleString()} nodes, ${mongoMeta.edgeCount.toLocaleString()} edges in ${buildMs.toFixed(0)} ms`);
     console.log(`  ✓  DAG subgraph: ${mongoMeta.dagNodeIds.length.toLocaleString()} nodes`);
 
-    // ── 7. Run all benchmark scenarios ─────────────────────────────────────
     printSectionTitle('Running benchmark scenarios');
 
-    const scenarios = buildCommonScenariosCypher(scale.nodeCount, 0.05, 8);
+    const scenarios = buildCommonScenariosCypher(scale.nodeCount, 0.05);
     const results = [];
 
     for (const scenario of scenarios) {
@@ -144,11 +122,9 @@ async function main(): Promise<void> {
       console.log(`✓  ${result.meanMs < 1 ? result.meanMs.toFixed(3) + ' ms/op' : result.meanMs.toFixed(2) + ' ms/op'}`);
     }
 
-    // ── 8. Print results table ─────────────────────────────────────────────
     console.log();
     printReport(results, mongoMeta.nodeCount, mongoMeta.edgeCount, 0, scale.label);
 
-    // Print cache stats if available
     const cacheManager = GraphManager.getInstance().getCacheManager();
     if (cacheManager) {
       const stats = await cacheManager.getStats();
@@ -157,12 +133,10 @@ async function main(): Promise<void> {
       console.log(`Current Cache Size: Total Graphs: ${stats.totalGraphIds.toLocaleString()} | Total Nodes: ${stats.totalNodes.toLocaleString()} | Edges: ${stats.totalEdges.toLocaleString()}`);
     }
 
-    // ── 9. Cleanup before next scale ───────────────────────────────────────
     await mongoMeta.graph.clear();
     if (typeof global.gc === 'function') global.gc();
   }
 
-  // ── 10. Cleanup and disconnect ────────────────────────────────────────────
   printSectionTitle('Cleaning up...');
   const cleanupGraph = factory.forGraph(config.graphId);
   await cleanupGraph.clear();
@@ -170,32 +144,22 @@ async function main(): Promise<void> {
   console.log('  ✓  Done.\n');
 }
 
-/**
- * Imports graph data into MongoDB and returns a modified GraphMeta
- * where the graph points to the MongoDB-backed instance.
- */
 async function importIntoMongo(
   factory: MongoGraphFactory,
   jsonData: Awaited<ReturnType<Graph['exportJSON']>>,
   memMeta: GraphMeta,
-  graphId: string
+  graphId: string,
 ): Promise<GraphMeta> {
-  // Import the graph structure into MongoDB using factory method
   const graph = await factory.fromGraphData(jsonData, graphId);
-
-  // Create indexes for benchmark query patterns
   await graph.createIndex('index_active', 'node', ['active']);
 
-  // Create a new GraphMeta with the MongoDB-backed graph
   return {
     ...memMeta,
-    graph: graph,
-    // Keep nodeIds and traversalPairs from the in-memory build
-    // since they represent the same node IDs
+    graph,
   };
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('\n  ✗  Fatal error:', err);
   process.exit(1);
 });

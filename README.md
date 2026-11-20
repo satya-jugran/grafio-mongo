@@ -1,20 +1,22 @@
 # grafio-mongo
 
-MongoDB storage backend for **grafio** — a graph database with pluggable storage architecture.
+MongoDB storage backend for **grafio** — a graph database with native openCypher support and pluggable storage.
 
 **Full documentation**: [https://satya-jugran.github.io/grafio](https://satya-jugran.github.io/grafio)
 
 ## Features
 
-- **MongoDB Backend** — Persistent storage with MongoDB (>= 5.0.0)
-- **Multiple Graphs** — via `graphId` partitioning
-- **Native Transactions** — Atomic multi-operation updates
-- **Optimized Indexes** — For nodes and edges
+- **MongoDB Backend** — Persistent storage with the official `mongodb` driver (`>= 7.0.0`)
+- **Multiple Graphs** — Isolated partitions via `graphId`
+- **Native Cypher Support** — Query and mutate MongoDB-backed graphs with `graph.query(...)`
+- **Scoped Property Indexes** — Label/type-scoped compound indexes and automatic Cypher `PlanCache` invalidation
+- **Native Transactions** — Atomic multi-operation updates on replica sets and sharded clusters
+- **Read-Through Caching** — Optional LRU / LFU / FIFO in-memory and Redis caching via `GraphManager`
 
 ## Installation
 
 ```bash
-npm install grafio-mongo
+npm install grafio grafio-mongo mongodb
 ```
 
 ## Quick Start
@@ -30,11 +32,40 @@ const factory = new MongoGraphFactory(client.db('mydb'));
 await factory.ensureIndexes();
 
 const graph = factory.forGraph('my-graph');
-graph.addNode('Person', { name: 'Alice', age: 30 });
-graph.addNode('City', { name: 'New York' });
-graph.addEdge('LIVES_IN', 'alice', 'nyc', { since: 2020 });
+const alice = await graph.addNode('Person', { name: 'Alice', age: 30 });
+const nyc = await graph.addNode('City', { name: 'New York' });
+await graph.addEdge(alice.id, nyc.id, 'LIVES_IN', { since: 2020 });
+
+// Query using openCypher
+const result = await graph.query(
+  'MATCH (p:Person)-[r:LIVES_IN]->(c:City) WHERE p.age >= $minAge RETURN p.name AS person, c.name AS city, r.since AS since',
+  { minAge: 25 },
+);
+console.log(result.rows);
 
 await client.close();
+```
+
+## Optional Caching with `GraphManager`
+
+```typescript
+import { GraphManager, MongoGraphFactory } from 'grafio-mongo';
+
+GraphManager.init({
+  cache: {
+    cacheStore: 'in-memory', // or 'redis' with redisUrl
+    maxNodesCount: 10_000,
+    maxEdgesCount: 20_000,
+    evictionStrategy: 'LRU',
+    preloadStrategy: 'recent',
+  },
+});
+
+const factory = new MongoGraphFactory(db);
+await factory.ensureIndexes();
+
+const graph = factory.forGraph('my-graph');
+await graph.warmCache();
 ```
 
 ## License

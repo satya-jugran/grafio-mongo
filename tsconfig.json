@@ -14,7 +14,7 @@
     "forceConsistentCasingInFileNames": true,
     "moduleResolution": "nodenext",
     "isolatedModules": true,
-    "types": ["node", "jest"]
+    "types": []
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests", "examples"]
