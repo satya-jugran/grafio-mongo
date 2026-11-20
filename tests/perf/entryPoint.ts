@@ -31,9 +31,9 @@ interface ScaleConfig {
 }
 
 const SCALES: ScaleConfig[] = [
-  { label: 'Small  (1k nodes)', nodeCount: 1_000, edgesPerNode: 3 },
-  { label: 'Medium (5k nodes)', nodeCount: 5_000, edgesPerNode: 3 },
-  { label: 'Large  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
+  { label: 'Small  (10k nodes)', nodeCount: 10_000, edgesPerNode: 3 },
+  { label: 'Medium (50k nodes)', nodeCount: 50_000, edgesPerNode: 3 },
+  { label: 'Large  (100k nodes)', nodeCount: 100_000, edgesPerNode: 3 },
 ];
 
 const DEFAULT_URI = 'mongodb://mongodb:27017,mongodb2:27018,mongodb3:27019/?replicaSet=rs0';

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [4.1.0] - 2026-11-20
+
+### Tier 2 Batching & Server-Side Pushdown (`grafio@^8.1.0`)
+
+- **Upgraded Core Dependency to `grafio@^8.1.0`:** Implemented the optional Tier 2 batch and pushdown capabilities introduced on `IStorageProvider` and re-exported `GroupedAggregateSpec`, `GroupedAggregateRequest`, and `GroupedAggregateRow`.
+- **Batched Edge Adjacency & Deletion (`getEdgesBySources`, `getEdgesByTargets`, `deleteEdges`):**
+  - Replaced `O(rows)` per-node edge fetches during multi-row Cypher joins and traversals with batched `$in` queries bounded by `_batchSize`, with `READ_PROJECTION` and per-endpoint `orderBy`/`limit` support.
+  - Added `deleteEdges` using batched `deleteMany` so `removeNode(..., true)` removes all deduplicated incident edges in a single round-trip per chunk.
+- **Server-Side Grouped Aggregation (`aggregateGrouped`):**
+  - Pushed Cypher `MATCH ... RETURN key, count(...), sum(...), avg(...), min(...), max(...)` queries directly to a single MongoDB `$match -> $group` pipeline without streaming raw documents over TCP.
+  - Preserved exact openCypher / `ClosureCompiler` parity for `undefined` vs `null` group keys, `NaN` exclusion, string/numeric `MIN`/`MAX`, and `AVG === 0` on empty groups.
+- **Single-Query Shortest Path (`traverseShortestPath`):**
+  - Executed unrestricted unweighted BFS `Graph.traverse` calls in a single MongoDB `$graphLookup` (`maxDepth: 5`) pipeline when paths fit within 6 hops or terminate early, returning `undefined` at the depth ceiling for transparent `grafio` batched BFS fallback on deeper graphs.
+
 ## [4.0.0] - 2026-11-19
 
 ### Breaking Changes

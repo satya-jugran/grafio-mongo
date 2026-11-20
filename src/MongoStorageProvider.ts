@@ -13,6 +13,8 @@ import {
   type CreateIndexOptions,
   type EdgeData,
   type GraphData,
+  type GroupedAggregateRequest,
+  type GroupedAggregateRow,
   type IndexMetadata,
   type IStorageProvider,
   type ITransactionHandle,
@@ -96,6 +98,8 @@ interface PartitionIndexState {
 const ID_ONLY_PROJECTION = Object.freeze({ _id: 0, id: 1 });
 const READ_PROJECTION = Object.freeze({ _id: 0, graphId: 0 });
 const DEFAULT_BULK_BATCH_SIZE = 5000;
+const MISSING_GROUP_KEY = '__GRAFIO_MISSING_KEY__\u0000';
+const SHORTEST_PATH_PUSHDOWN_MAX_DEPTH = 5;
 
 const PARTITION_INDEX_CACHE = new WeakMap<Db, Map<string, PartitionIndexState>>();
 
@@ -227,17 +231,18 @@ export class MongoStorageProvider implements IStorageProvider {
    * Call once on application startup before performing any graph operations.
    */
   async ensureIndexes(): Promise<void> {
-    await Promise.all([
-      this._nodes.createIndex({ graphId: 1, id: 1 }, { unique: true, name: 'node_graph_id_unique' }),
-      this._nodes.createIndex({ graphId: 1, labels: 1 }, { name: 'node_graph_labels' }),
-      this._edges.createIndex({ graphId: 1, id: 1 }, { unique: true, name: 'edge_graph_id_unique' }),
-      this._edges.createIndex({ graphId: 1, type: 1 }, { name: 'edge_graph_type' }),
-      this._edges.createIndex({ graphId: 1, sourceId: 1, type: 1 }, { name: 'edge_graph_source_type' }),
-      this._edges.createIndex({ graphId: 1, targetId: 1, type: 1 }, { name: 'edge_graph_target_type' }),
-      this._indexMeta.createIndex(
-        { graphId: 1, name: 1 },
-        { unique: true, name: 'index_meta_graph_name_unique' },
-      ),
+    await this._nodes.createIndexes([
+      { key: { graphId: 1, id: 1 }, unique: true, name: 'node_graph_id_unique' },
+      { key: { graphId: 1, labels: 1 }, name: 'node_graph_labels' },
+    ]);
+    await this._edges.createIndexes([
+      { key: { graphId: 1, id: 1 }, unique: true, name: 'edge_graph_id_unique' },
+      { key: { graphId: 1, type: 1 }, name: 'edge_graph_type' },
+      { key: { graphId: 1, sourceId: 1, type: 1 }, name: 'edge_graph_source_type' },
+      { key: { graphId: 1, targetId: 1, type: 1 }, name: 'edge_graph_target_type' },
+    ]);
+    await this._indexMeta.createIndexes([
+      { key: { graphId: 1, name: 1 }, unique: true, name: 'index_meta_graph_name_unique' },
     ]);
   }
 
@@ -499,6 +504,224 @@ export class MongoStorageProvider implements IStorageProvider {
     return this._executeListQuery(this._edges, filter, (doc) => this._docToEdge(doc), options);
   }
 
+  async getEdgesBySources(
+    nodeIds: readonly string[],
+    options?: StorageQueryOptions,
+  ): Promise<Map<string, ReadonlyEdgeData[]>> {
+    return this._getEdgesByEndpointBatch('sourceId', nodeIds, options);
+  }
+
+  async getEdgesByTargets(
+    nodeIds: readonly string[],
+    options?: StorageQueryOptions,
+  ): Promise<Map<string, ReadonlyEdgeData[]>> {
+    return this._getEdgesByEndpointBatch('targetId', nodeIds, options);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Optional pushdown capabilities
+  // ---------------------------------------------------------------------------
+
+  async aggregateGrouped(
+    request: GroupedAggregateRequest,
+  ): Promise<GroupedAggregateRow[] | null> {
+    if (request.aggregates.some((a) => a.distinct)) {
+      return null;
+    }
+
+    const typeField = request.target === 'node' ? 'labels' : 'type';
+    const collection = (request.target === 'node'
+      ? this._nodes
+      : this._edges) as unknown as Collection<Document>;
+    const matchFilter = this._buildEntityFilter<Document>(typeField, request.options);
+    const session = request.options?.transaction?.context as ClientSession | undefined;
+
+    const groupIdSpec: Record<string, Document> = {};
+    for (let i = 0; i < request.groupByKeys.length; i++) {
+      const propExpr: Document = { $getField: { field: request.groupByKeys[i]!, input: '$properties' } };
+      groupIdSpec[`g${i}`] = {
+        $cond: [{ $eq: [{ $type: propExpr }, 'missing'] }, MISSING_GROUP_KEY, propExpr],
+      };
+    }
+
+    const groupStage: Record<string, unknown> = {
+      _id: request.groupByKeys.length === 0 ? null : groupIdSpec,
+    };
+
+    for (let i = 0; i < request.aggregates.length; i++) {
+      const spec = request.aggregates[i]!;
+      const propExpr: Document | undefined = spec.propertyKey
+        ? { $getField: { field: spec.propertyKey, input: '$properties' } }
+        : undefined;
+
+      switch (spec.fn) {
+        case 'COUNT': {
+          if (!propExpr) {
+            groupStage[`a${i}`] = { $sum: 1 };
+          } else {
+            const presentNotNull: Document = {
+              $and: [{ $ne: [{ $type: propExpr }, 'missing'] }, { $ne: [propExpr, null] }],
+            };
+            groupStage[`a${i}`] = { $sum: { $cond: [presentNotNull, 1, 0] } };
+          }
+          break;
+        }
+        case 'SUM': {
+          const validNum: Document = {
+            $and: [{ $isNumber: propExpr }, { $ne: [propExpr, NaN] }],
+          };
+          groupStage[`a${i}`] = { $sum: { $cond: [validNum, propExpr, 0] } };
+          break;
+        }
+        case 'AVG': {
+          const validNum: Document = {
+            $and: [{ $isNumber: propExpr }, { $ne: [propExpr, NaN] }],
+          };
+          groupStage[`__avgSum_${i}`] = { $sum: { $cond: [validNum, propExpr, 0] } };
+          groupStage[`__avgCnt_${i}`] = { $sum: { $cond: [validNum, 1, 0] } };
+          break;
+        }
+        case 'MIN':
+        case 'MAX': {
+          const op = spec.fn === 'MIN' ? '$min' : '$max';
+          const validComparable: Document = {
+            $and: [
+              { $ne: [{ $type: propExpr }, 'missing'] },
+              { $ne: [propExpr, null] },
+              { $ne: [propExpr, NaN] },
+            ],
+          };
+          groupStage[`a${i}`] = { [op]: { $cond: [validComparable, propExpr, null] } };
+          break;
+        }
+      }
+    }
+
+    const docs = await collection
+      .aggregate<Document>([{ $match: matchFilter }, { $group: groupStage }], { session })
+      .toArray();
+
+    return docs.map((doc) => {
+      const idMap = (doc._id ?? {}) as Record<string, unknown>;
+      const groupValues = request.groupByKeys.map((_, g) => {
+        const val = idMap[`g${g}`];
+        return val === MISSING_GROUP_KEY ? undefined : val;
+      });
+
+      const aggValues: Record<string, unknown> = {};
+      for (let i = 0; i < request.aggregates.length; i++) {
+        const spec = request.aggregates[i]!;
+        if (spec.fn === 'AVG') {
+          const cnt = (doc[`__avgCnt_${i}`] as number | undefined) ?? 0;
+          const sum = (doc[`__avgSum_${i}`] as number | undefined) ?? 0;
+          aggValues[spec.alias] = cnt === 0 ? 0 : sum / cnt;
+        } else if (spec.fn === 'MIN' || spec.fn === 'MAX') {
+          aggValues[spec.alias] = doc[`a${i}`] ?? null;
+        } else {
+          aggValues[spec.alias] = doc[`a${i}`] ?? 0;
+        }
+      }
+      return { groupValues, aggValues };
+    });
+  }
+
+  async traverseShortestPath(
+    sourceId: string,
+    targetId: string,
+    edgeTypes?: readonly string[],
+  ): Promise<string[] | null | undefined> {
+    if (sourceId === targetId) {
+      return (await this.hasNode(sourceId)) ? [sourceId] : null;
+    }
+
+    const endpointCount = await this._nodes.countDocuments({
+      graphId: this._graphId,
+      id: { $in: [sourceId, targetId] },
+    });
+    if (endpointCount < 2) {
+      return null;
+    }
+
+    const restrictSearchWithMatch: Document =
+      edgeTypes && edgeTypes.length > 0
+        ? { graphId: this._graphId, type: { $in: [...edgeTypes] } }
+        : { graphId: this._graphId };
+
+    interface GraphLookupEdgeHit {
+      sourceId: string;
+      targetId: string;
+      hop: number;
+    }
+
+    const docs = await this._nodes
+      .aggregate<{ visitedEdges: GraphLookupEdgeHit[] }>([
+        { $match: { graphId: this._graphId, id: sourceId } },
+        {
+          $graphLookup: {
+            from: this._edges.collectionName,
+            startWith: '$id',
+            connectFromField: 'targetId',
+            connectToField: 'sourceId',
+            as: 'visitedEdges',
+            maxDepth: SHORTEST_PATH_PUSHDOWN_MAX_DEPTH,
+            depthField: 'hop',
+            restrictSearchWithMatch,
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            'visitedEdges.sourceId': 1,
+            'visitedEdges.targetId': 1,
+            'visitedEdges.hop': 1,
+          },
+        },
+      ])
+      .toArray();
+
+    const visitedEdges = docs[0]?.visitedEdges;
+    if (!visitedEdges || visitedEdges.length === 0) {
+      return null;
+    }
+
+    const byHop: GraphLookupEdgeHit[][] = [];
+    let maxObservedHop = -1;
+    let minTargetHop = Infinity;
+
+    for (const hit of visitedEdges) {
+      if (hit.hop > maxObservedHop) maxObservedHop = hit.hop;
+      let bucket = byHop[hit.hop];
+      if (!bucket) {
+        bucket = [];
+        byHop[hit.hop] = bucket;
+      }
+      bucket.push(hit);
+      if (hit.targetId === targetId && hit.hop < minTargetHop) {
+        minTargetHop = hit.hop;
+      }
+    }
+
+    if (minTargetHop === Infinity) {
+      // If we hit maxDepth, deeper shortest paths (> 6 hops) may still exist via BFS fallback.
+      return maxObservedHop >= SHORTEST_PATH_PUSHDOWN_MAX_DEPTH ? undefined : null;
+    }
+
+    const reversedPath: string[] = [targetId];
+    let current = targetId;
+    for (let h = minTargetHop; h >= 0; h--) {
+      const bucket = byHop[h];
+      const match = bucket?.find(
+        (e) => e.targetId === current && (h > 0 || e.sourceId === sourceId),
+      );
+      if (!match) {
+        return undefined;
+      }
+      reversedPath.push(match.sourceId);
+      current = match.sourceId;
+    }
+    return reversedPath.reverse();
+  }
+
   // ---------------------------------------------------------------------------
   // Edge mutations
   // ---------------------------------------------------------------------------
@@ -591,6 +814,19 @@ export class MongoStorageProvider implements IStorageProvider {
   async deleteEdge(id: string, transaction?: ITransactionHandle): Promise<void> {
     const session = transaction?.context as ClientSession | undefined;
     await this._edges.deleteOne({ graphId: this._graphId, id }, { session });
+  }
+
+  async deleteEdges(ids: readonly string[], transaction?: ITransactionHandle): Promise<void> {
+    if (ids.length === 0) return;
+    const uniqueIds = Array.from(new Set(ids));
+    const session = transaction?.context as ClientSession | undefined;
+    for (let i = 0; i < uniqueIds.length; i += this._batchSize) {
+      const slice = uniqueIds.slice(i, i + this._batchSize);
+      await this._edges.deleteMany(
+        { graphId: this._graphId, id: { $in: slice } },
+        { session },
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1101,6 +1337,65 @@ export class MongoStorageProvider implements IStorageProvider {
   // ---------------------------------------------------------------------------
   // Private query, aggregation & filter helpers
   // ---------------------------------------------------------------------------
+
+  private async _getEdgesByEndpointBatch(
+    endpointField: 'sourceId' | 'targetId',
+    nodeIds: readonly string[],
+    options?: StorageQueryOptions,
+  ): Promise<Map<string, ReadonlyEdgeData[]>> {
+    const uniqueIds = Array.from(new Set(nodeIds));
+    const result = new Map<string, ReadonlyEdgeData[]>();
+    for (const id of uniqueIds) {
+      result.set(id, []);
+    }
+    if (uniqueIds.length === 0 || options?.limit === 0) {
+      return result;
+    }
+
+    const session = options?.transaction?.context as ClientSession | undefined;
+    for (let i = 0; i < uniqueIds.length; i += this._batchSize) {
+      const slice = uniqueIds.slice(i, i + this._batchSize);
+      const filter = this._buildEntityFilter<EdgeDoc>(
+        'type',
+        options,
+        { [endpointField]: { $in: slice } } as Filter<EdgeDoc>,
+      );
+      const cursor = this._edges
+        .find(filter, { projection: READ_PROJECTION, session })
+        .batchSize(this._batchSize);
+
+      for await (const doc of cursor) {
+        const bucket = result.get(doc[endpointField]);
+        if (bucket) {
+          bucket.push(this._docToEdge(doc));
+        }
+      }
+    }
+
+    if (options?.orderBy || (options?.limit !== undefined && options.limit > 0)) {
+      for (const [id, list] of result) {
+        let out = list;
+        if (options.orderBy && out.length > 1) {
+          const { field, direction } = options.orderBy;
+          out = [...out].sort((a, b) => {
+            const aVal = field === 'createdOn' || field === 'updatedOn' ? a[field] : a.properties[field];
+            const bVal = field === 'createdOn' || field === 'updatedOn' ? b[field] : b.properties[field];
+            if (aVal === bVal) return 0;
+            if (aVal === undefined) return direction === 'asc' ? 1 : -1;
+            if (bVal === undefined) return direction === 'asc' ? -1 : 1;
+            const lt = (aVal as number | string) < (bVal as number | string);
+            return direction === 'asc' ? (lt ? -1 : 1) : (lt ? 1 : -1);
+          });
+        }
+        if (options.limit !== undefined && options.limit > 0 && out.length > options.limit) {
+          out = out.slice(0, options.limit);
+        }
+        result.set(id, out);
+      }
+    }
+
+    return result;
+  }
 
   private async _executeListQuery<TDoc extends Document, TOut>(
     collection: Collection<TDoc>,

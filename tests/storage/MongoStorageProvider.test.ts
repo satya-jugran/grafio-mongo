@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { MongoMemoryReplSet, MongoMemoryServer } from 'mongodb-memory-server';
-import { MongoClient, type Db } from 'mongodb';
+import { MongoClient, type CommandStartedEvent, type Db } from 'mongodb';
 import { Graph } from 'grafio';
 import {
   EdgeAlreadyExistsError,
@@ -678,6 +678,287 @@ describe('MongoStorageProvider v8 Contract & MongoDB Parity', () => {
         'No active transaction to commit',
       );
       await expect(rsProvider.rollbackTransaction(handle)).resolves.toBeUndefined();
+
+      // Transactional isolation for aggregateGrouped
+      const isoTx = await rsProvider.beginTransaction();
+      await rsProvider.insertNode(
+        { id: 'iso-1', labels: ['Metric'], properties: { group: 'tx', val: 50 } },
+        isoTx,
+      );
+      const outsideRows = await rsProvider.aggregateGrouped({
+        target: 'node',
+        groupByKeys: ['group'],
+        aggregates: [{ alias: 'total', fn: 'SUM', propertyKey: 'val' }],
+        options: { filter: { types: ['Metric'] } },
+      });
+      expect(outsideRows).toEqual([]);
+
+      const insideRows = await rsProvider.aggregateGrouped({
+        target: 'node',
+        groupByKeys: ['group'],
+        aggregates: [{ alias: 'total', fn: 'SUM', propertyKey: 'val' }],
+        options: { filter: { types: ['Metric'] }, transaction: isoTx },
+      });
+      expect(insideRows).toEqual([{ groupValues: ['tx'], aggValues: { total: 50 } }]);
+      await rsProvider.rollbackTransaction(isoTx);
+    });
+  });
+
+  describe('Tier 2 Batch & Server-Side Pushdown Capabilities', () => {
+    it('batches getEdgesBySources, getEdgesByTargets, deleteEdges, and deduplicates self-loops', async () => {
+      await provider.insertNodes([
+        { id: 'a', labels: ['N'], properties: {} },
+        { id: 'b', labels: ['N'], properties: {} },
+        { id: 'c', labels: ['N'], properties: {} },
+      ]);
+      await provider.insertEdges([
+        { id: 'e1', sourceId: 'a', targetId: 'b', type: 'KNOWS', properties: { w: 20 } },
+        { id: 'e2', sourceId: 'a', targetId: 'c', type: 'KNOWS', properties: { w: 5 } },
+        { id: 'e3', sourceId: 'a', targetId: 'b', type: 'LIKES', properties: { w: 1 } },
+        { id: 'e4', sourceId: 'b', targetId: 'c', type: 'KNOWS', properties: {} },
+      ]);
+
+      expect((await provider.getEdgesBySources([])).size).toBe(0);
+      const zeroLimit = await provider.getEdgesBySources(['a', 'b'], { limit: 0 });
+      expect(zeroLimit.get('a')).toEqual([]);
+      expect(zeroLimit.get('b')).toEqual([]);
+
+      const srcSorted = await provider.getEdgesBySources(['a', 'c'], {
+        filter: { types: ['KNOWS'] },
+        orderBy: { field: 'w', direction: 'asc' },
+        limit: 1,
+      });
+      expect(srcSorted.get('a')?.map((e) => e.id)).toEqual(['e2']);
+      expect(srcSorted.get('c')).toEqual([]);
+
+      const tgtSorted = await provider.getEdgesByTargets(['b', 'c'], {
+        orderBy: { field: 'w', direction: 'desc' },
+      });
+      expect(tgtSorted.get('b')?.map((e) => e.id)).toEqual(['e1', 'e3']);
+      // Undefined sort property comes first in descending order matching GraphIndex/CachedStorageProvider parity
+      expect(tgtSorted.get('c')?.map((e) => e.id)).toEqual(['e4', 'e2']);
+
+      // Batch delete & empty no-op
+      await provider.deleteEdges([]);
+      await provider.deleteEdges(['e3', 'e4', 'e3']);
+      expect(await provider.hasEdge('e3')).toBe(false);
+      expect(await provider.hasEdge('e4')).toBe(false);
+
+      // Self-loop cascade delete exact count via Graph.removeNode
+      const graph = new Graph(provider);
+      const loopNode = await graph.addNode('N', { name: 'Loop' });
+      await graph.addEdge(loopNode.id, loopNode.id, 'SELF');
+      const res = await graph.removeNode(loopNode.id, true);
+      expect(res).toEqual({ result: true, cascadeDeletedEdgesCount: 1 });
+    });
+
+    it('pushes aggregateGrouped cleanly with undefined vs null keys, NaN exclusion, empty AVG === 0, and edge grouping', async () => {
+      await provider.insertNodes([
+        { id: 'p1', labels: ['Person'], properties: { city: 'NYC', score: 10 } },
+        { id: 'p2', labels: ['Person'], properties: { city: 'NYC', score: Number.NaN } },
+        { id: 'p3', labels: ['Person'], properties: { city: null, score: 30 } },
+        { id: 'p4', labels: ['Person'], properties: {} }, // city missing -> undefined
+        { id: 'p5', labels: ['Person'], properties: { city: 'LA' } }, // missing score
+      ]);
+      await provider.insertEdges([
+        { id: 'r1', sourceId: 'p1', targetId: 'p2', type: 'RATED', properties: { kind: 'A', val: 4 } },
+        { id: 'r2', sourceId: 'p2', targetId: 'p3', type: 'RATED', properties: { kind: 'A', val: 6 } },
+      ]);
+
+      const rows = await provider.aggregateGrouped({
+        target: 'node',
+        groupByKeys: ['city'],
+        aggregates: [
+          { alias: 'cntAll', fn: 'COUNT' },
+          { alias: 'cntScore', fn: 'COUNT', propertyKey: 'score' },
+          { alias: 'sumScore', fn: 'SUM', propertyKey: 'score' },
+          { alias: 'avgScore', fn: 'AVG', propertyKey: 'score' },
+          { alias: 'minScore', fn: 'MIN', propertyKey: 'score' },
+          { alias: 'maxScore', fn: 'MAX', propertyKey: 'score' },
+        ],
+        options: { filter: { types: ['Person'] } },
+      });
+      expect(rows).not.toBeNull();
+
+      const byCity = new Map<unknown, Record<string, unknown>>(
+        rows!.map((r) => [r.groupValues[0], r.aggValues]),
+      );
+      // Distinction between null and missing/undefined must match JavaScript ClosureCompiler semantics
+      expect(byCity.get(undefined)).toEqual({
+        cntAll: 1,
+        cntScore: 0,
+        sumScore: 0,
+        avgScore: 0,
+        minScore: null,
+        maxScore: null,
+      });
+      expect(byCity.get(null)).toEqual({
+        cntAll: 1,
+        cntScore: 1,
+        sumScore: 30,
+        avgScore: 30,
+        minScore: 30,
+        maxScore: 30,
+      });
+      // NaN is counted by COUNT(score) in Cypher, excluded from SUM/AVG/MIN/MAX
+      expect(byCity.get('NYC')).toEqual({
+        cntAll: 2,
+        cntScore: 2,
+        sumScore: 10,
+        avgScore: 10,
+        minScore: 10,
+        maxScore: 10,
+      });
+      expect(byCity.get('LA')).toEqual({
+        cntAll: 1,
+        cntScore: 0,
+        sumScore: 0,
+        avgScore: 0,
+        minScore: null,
+        maxScore: null,
+      });
+
+      // Edge-level grouping
+      const edgeRows = await provider.aggregateGrouped({
+        target: 'edge',
+        groupByKeys: ['kind'],
+        aggregates: [{ alias: 'avgVal', fn: 'AVG', propertyKey: 'val' }],
+      });
+      expect(edgeRows).toEqual([{ groupValues: ['A'], aggValues: { avgVal: 5 } }]);
+
+      // distinct aggregate delegates fallback cleanly by returning null
+      expect(
+        await provider.aggregateGrouped({
+          target: 'node',
+          groupByKeys: ['city'],
+          aggregates: [{ alias: 'c', fn: 'COUNT', propertyKey: 'score', distinct: true }],
+        }),
+      ).toBeNull();
+    });
+
+    it('executes traverseShortestPath via $graphLookup and falls back cleanly beyond 6 hops', async () => {
+      const chainIds = Array.from({ length: 8 }, (_, i) => `c${i}`);
+      await provider.insertNodes(
+        chainIds.map((id) => ({ id, labels: ['Hop'], properties: {} })),
+      );
+      await provider.insertNode({ id: 'isolated', labels: ['Hop'], properties: {} });
+
+      const chainEdges = chainIds.slice(0, -1).map((src, i) => ({
+        id: `ce${i}`,
+        sourceId: src,
+        targetId: chainIds[i + 1]!,
+        type: 'STEP',
+        properties: {},
+      }));
+      await provider.insertEdges([
+        ...chainEdges,
+        { id: 'alt', sourceId: 'c0', targetId: 'c3', type: 'SHORTCUT', properties: {} },
+      ]);
+
+      expect(await provider.traverseShortestPath('missing', 'c0')).toBeNull();
+      expect(await provider.traverseShortestPath('c0', 'c0')).toEqual(['c0']);
+      expect(await provider.traverseShortestPath('c0', 'isolated')).toBeNull();
+
+      // Shortest 2-hop via SHORTCUT vs 4-hop STEP-only
+      expect(await provider.traverseShortestPath('c0', 'c3')).toEqual(['c0', 'c3']);
+      expect(await provider.traverseShortestPath('c0', 'c3', ['STEP'])).toEqual([
+        'c0',
+        'c1',
+        'c2',
+        'c3',
+      ]);
+
+      // 6 hops (7 nodes: c0 -> c6) resolves directly inside $graphLookup maxDepth: 5
+      expect(await provider.traverseShortestPath('c0', 'c6', ['STEP'])).toEqual(chainIds.slice(0, 7));
+
+      // 7 hops (c0 -> c7) exceeds maxDepth: 5 -> returns undefined so Graph.traverse falls back cleanly
+      expect(await provider.traverseShortestPath('c0', 'c7', ['STEP'])).toBeUndefined();
+      const graph = new Graph(provider);
+      expect(
+        await graph.traverse('c0', 'c7', { method: 'bfs', edgeTypes: ['STEP'] }),
+      ).toEqual([chainIds]);
+    });
+
+    it('collapses MongoDB commandStarted round-trips for multi-row Cypher joins, filtered COUNT, and grouped aggregates', async () => {
+      const spyClient = new MongoClient(mongoServer.getUri(), { monitorCommands: true });
+      await spyClient.connect();
+      const commands: string[] = [];
+      const onCmd = (ev: CommandStartedEvent) => {
+        commands.push(ev.commandName);
+      };
+      spyClient.on('commandStarted', onCmd);
+
+      try {
+        const spyProvider = new MongoStorageProvider(spyClient.db('test_provider_v8_rtt'), {
+          graphId: 'rtt-test',
+        });
+        await spyProvider.ensureIndexes();
+        const graph = new Graph(spyProvider);
+
+        // Seed 8 Users -> 8 Profiles with varying cities & scores
+        const nodes = [];
+        const edges = [];
+        for (let i = 0; i < 8; i++) {
+          nodes.push({
+            id: `u${i}`,
+            labels: ['User'],
+            properties: { active: i % 2 === 0, city: i < 4 ? 'NYC' : 'SF', score: (i + 1) * 10 },
+          });
+          nodes.push({
+            id: `p${i}`,
+            labels: ['Profile'],
+            properties: { bio: `bio-${i}` },
+          });
+          edges.push({
+            id: `e${i}`,
+            sourceId: `u${i}`,
+            targetId: `p${i}`,
+            type: 'HAS_PROFILE',
+            properties: {},
+          });
+        }
+        await spyProvider.insertNodes(nodes);
+        await spyProvider.insertEdges(edges);
+        // Pre-warm index metadata cache once so commandStarted assertions isolate query RTTs
+        await spyProvider.getIndexes();
+
+        // 1. Multi-row Cypher join executes in constant O(hops) commands, NOT O(rows)
+        commands.length = 0;
+        const joinRes = await graph.query(`
+          MATCH (u:User)-[:HAS_PROFILE]->(p:Profile)
+          RETURN u.city AS city, p.bio AS bio
+        `);
+        expect(joinRes.rows).toHaveLength(8);
+        // 1 User scan + 1 getEdgesBySources batch + 1 getNodesByIds batch = 3 find commands
+        expect(commands.length).toBeLessThanOrEqual(4);
+
+        // 2. WHERE-filtered COUNT pushdown issues zero `find` commands (1 count/aggregate RTT)
+        commands.length = 0;
+        const countRes = await graph.query(`
+          MATCH (u:User)
+          WHERE u.active = true
+          RETURN count(u) AS activeUsers
+        `);
+        expect(countRes.rows).toEqual([{ activeUsers: 4 }]);
+        expect(commands).toHaveLength(1);
+        expect(commands).not.toContain('find');
+
+        // 3. Grouped Cypher aggregate pushdown executes in 1 `aggregate` command without transferring docs
+        commands.length = 0;
+        const aggRes = await graph.query(`
+          MATCH (u:User)
+          RETURN u.city AS city, count(u) AS c, sum(u.score) AS total, avg(u.score) AS mean
+          ORDER BY city ASC
+        `);
+        expect(aggRes.rows).toEqual([
+          { city: 'NYC', c: 4, total: 100, mean: 25 },
+          { city: 'SF', c: 4, total: 260, mean: 65 },
+        ]);
+        expect(commands).toEqual(['aggregate']);
+      } finally {
+        spyClient.off('commandStarted', onCmd);
+        await spyClient.close();
+      }
     });
   });
 });
