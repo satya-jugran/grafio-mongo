@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { MongoMemoryReplSet, MongoMemoryServer } from 'mongodb-memory-server';
 import { MongoClient, type CommandStartedEvent, type Db } from 'mongodb';
-import { Graph } from 'grafio';
+import { Graph, ReadOnlyQueryError } from 'grafio';
 import {
   EdgeAlreadyExistsError,
   EdgeNotFoundError,
@@ -278,6 +278,25 @@ describe('MongoStorageProvider v8 Contract & MongoDB Parity', () => {
       await expect(provider.removeNodeLabels('missing-node', ['Person'])).rejects.toThrow(
         NodeNotFoundError,
       );
+
+      // Single-RTT addNodeLabels ($addToSet deduplication) & Cypher SET n:Label / readOnly guard
+      await provider.addNodeLabels('n1', ['LTM', 'Pinned', 'LTM', 'Person']);
+      expect((await provider.getNode('n1'))?.labels).toEqual(['Person', 'Staff', 'LTM', 'Pinned']);
+      await expect(provider.addNodeLabels('missing-node', ['LTM'])).rejects.toThrow(
+        NodeNotFoundError,
+      );
+
+      const g = new Graph(provider);
+      const setLabelRes = await g.query(
+        "MATCH (n:LTM) WHERE id(n) = 'n1' SET n:Promoted REMOVE n:Staff RETURN labels(n) AS lbls",
+      );
+      expect(setLabelRes.summary.labelsAdded).toBe(1);
+      expect(setLabelRes.summary.labelsRemoved).toBe(1);
+      expect(setLabelRes.rows[0].lbls).toEqual(['Person', 'LTM', 'Pinned', 'Promoted']);
+
+      await expect(
+        g.query('MATCH (n) SET n:Bad RETURN n', { readOnly: true }),
+      ).rejects.toThrow(ReadOnlyQueryError);
     });
   });
 

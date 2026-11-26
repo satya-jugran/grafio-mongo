@@ -384,6 +384,31 @@ export class MongoStorageProvider implements IStorageProvider {
     }
   }
 
+  /**
+   * Adds the specified labels to a node's labels array as a set in a single round-trip.
+   * Labels already present on the node are not duplicated.
+   * @throws NodeNotFoundError if the node does not exist
+   */
+  async addNodeLabels(
+    nodeId: string,
+    labels: string[],
+    transaction?: ITransactionHandle,
+  ): Promise<void> {
+    const session = transaction?.context as ClientSession | undefined;
+    const result = await this._nodes.updateOne(
+      { graphId: this._graphId, id: nodeId },
+      {
+        $addToSet: { labels: { $each: labels } },
+        $set: { updatedOn: Date.now() },
+      } as Document,
+      { session },
+    );
+
+    if (result.matchedCount === 0) {
+      throw new NodeNotFoundError(nodeId);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Node queries
   // ---------------------------------------------------------------------------

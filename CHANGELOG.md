@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [4.3.0] - 2026-11-26
+
+### Updated to `grafio@^8.4.0`
+
+- **Upgraded Core Dependency to `grafio@^8.4.0`:** Adds Cypher `SET n:Label` / `SET n:L1:L2`, `MERGE ... ON CREATE/MATCH SET n:Label`, `CypherSummary.labelsAdded`, and native `CypherQueryOptions.readOnly` with `ReadOnlyQueryError`. Refer to the [Grafio CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md) for full details.
+- **Single-RTT `MongoStorageProvider.addNodeLabels()`:** Implemented `IStorageProvider.addNodeLabels()` using atomic `$addToSet: { labels: { $each: labels } }` with `updatedOn` timestamp update, transaction `ClientSession` support, and `NodeNotFoundError` enforcement.
+
 ## [4.2.0] - 2026-11-26
 
 ### Updated to `grafio@^8.2.0`
