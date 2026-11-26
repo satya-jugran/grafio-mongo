@@ -16,7 +16,7 @@
   },
   "peerDependencies": {},
   "dependencies": {
-    "grafio": "^8.1.0",
+    "grafio": "^8.2.0",
     "mongodb": ">=7.0.0"
   },
   "devDependencies": {

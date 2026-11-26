@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [4.2.0] - 2026-11-26
+
+### Updated to `grafio@^8.2.0`
+
+- **Upgraded Core Dependency to `grafio@^8.2.0`:** Brings postfix label and relationship-type predicates in Cypher expressions (`WHERE n:Preference OR n:Invariant`, `WHERE n:A|B`, `WHERE n:A:B`, `WHERE NOT n:Archived`, `WHERE r:TYPE_A|TYPE_B`) with native `NodeScanStep.types` (`{ $in: types }`) pushdown against MongoDB. Refer to the [Grafio CHANGELOG](https://github.com/satya-jugran/grafio/blob/main/CHANGELOG.md) for full details.
+
 ## [4.1.0] - 2026-11-20
 
 ### Tier 2 Batching & Server-Side Pushdown (`grafio@^8.1.0`)
